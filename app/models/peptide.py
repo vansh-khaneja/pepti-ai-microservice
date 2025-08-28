@@ -1,0 +1,29 @@
+from pydantic import BaseModel, Field
+from typing import Optional
+from datetime import datetime
+
+class PeptideCreate(BaseModel):
+    """Model for creating a new peptide entry"""
+    name: str = Field(..., description="Name of the peptide")
+    overview: str = Field(..., description="Overview/description of the peptide")
+    mechanism_of_actions: str = Field(..., description="Mechanism of actions of the peptide")
+    potential_research_fields: str = Field(..., description="Potential research fields for the peptide")
+
+class PeptidePayload(BaseModel):
+    """Model for the payload that will be stored in Qdrant"""
+    name: str
+    overview: str
+    mechanism_of_actions: str
+    potential_research_fields: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    def to_text(self) -> str:
+        """Convert to text format for vectorization"""
+        return f"name: {self.name} overview: {self.overview} mechanism of actions: {self.mechanism_of_actions} potential research fields: {self.potential_research_fields}"
+
+class PeptideResponse(BaseModel):
+    """Response model for peptide operations"""
+    success: bool = True
+    message: str = "Operation completed successfully"
+    data: Optional[dict] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)

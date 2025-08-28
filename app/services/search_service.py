@@ -1,0 +1,366 @@
+import requests
+from bs4 import BeautifulSoup
+from serpapi import GoogleSearch
+import tiktoken
+import json
+from typing import List, Dict, Any
+import logging
+from sqlalchemy.orm import Session
+from app.models.search import SearchRequest, SearchResult, ContentChunk, SearchResponse
+from app.core.config import settings
+from app.utils.helpers import logger
+from datetime import datetime
+
+class SearchService:
+    def __init__(self):
+        self.serp_api_key = settings.SERP_API_KEY
+        self.openai_api_key = settings.OPENAI_API_KEY
+        self.chunk_size = 1000  # characters per chunk
+        self.chunk_overlap = 200  # overlap between chunks
+        self.max_chunks_per_site = 5  # maximum chunks per website
+
+    def search_peptide(self, search_request: SearchRequest, db: Session) -> SearchResponse:
+        """Main method to perform complete peptide search"""
+        try:
+            logger.info(f"Starting search for peptide: {search_request.peptide_name}")
+            
+            # Step 1: Search using SerpAPI (get more results to find allowed URLs)
+            search_results = self._perform_serp_search(search_request)
+            logger.info(f"Found {len(search_results)} search results from SerpAPI")
+            
+            # Step 2: Scrape content from allowed URLs only
+            scraped_content = self._scrape_top_results(search_results, db)
+            logger.info(f"Scraped content from {len(scraped_content)} allowed websites")
+            
+            # If no allowed URLs found, return error response
+            if not scraped_content:
+                logger.warning("No allowed URLs found in search results")
+                return SearchResponse(
+                    peptide_name=search_request.peptide_name,
+                    requirements=search_request.requirements,
+                    generated_response="No information found from allowed sources. Please add relevant domains to the allowed URLs list.",
+                    source_sites=[],
+                    search_timestamp=datetime.utcnow()
+                )
+            
+            # Step 3: Chunk the content
+            content_chunks = self._chunk_content(scraped_content)
+            logger.info(f"Created {len(content_chunks)} content chunks")
+            
+            # Step 4: Perform similarity search to find most relevant chunks
+            relevant_chunks = self._find_relevant_chunks(content_chunks, search_request)
+            logger.info(f"Found {len(relevant_chunks)} relevant chunks")
+            
+            # Step 5: Generate LLM response
+            generated_response = self._generate_llm_response(relevant_chunks, search_request)
+            logger.info("Generated LLM response successfully")
+            
+            # Step 6: Create final response with only generated response and source sites
+            source_sites = []
+            for item in scraped_content:
+                source_sites.append({
+                    "title": item["title"],
+                    "url": item["url"]
+                })
+            
+            return SearchResponse(
+                peptide_name=search_request.peptide_name,
+                requirements=search_request.requirements,
+                generated_response=generated_response,
+                source_sites=source_sites,
+                search_timestamp=datetime.utcnow()
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in search_peptide: {str(e)}")
+            raise
+
+    def _perform_serp_search(self, search_request: SearchRequest) -> List[SearchResult]:
+        """Perform search using SerpAPI"""
+        try:
+            query = f"{search_request.peptide_name} {search_request.requirements}"
+            
+            search = GoogleSearch({
+                "q": query,
+                "api_key": self.serp_api_key,
+                "num": 50  # Get top 50 results to find more allowed URLs
+            })
+            
+            results = search.get_dict()
+            organic_results = results.get("organic_results", [])
+            
+            search_results = []
+            for i, result in enumerate(organic_results):
+                search_results.append(SearchResult(
+                    title=result.get("title", ""),
+                    url=result.get("link", ""),
+                    snippet=result.get("snippet", ""),
+                    rank=i + 1
+                ))
+            
+            return search_results
+            
+        except Exception as e:
+            logger.error(f"Error in SerpAPI search: {str(e)}")
+            raise
+
+    def _scrape_top_results(self, search_results: List[SearchResult], db: Session) -> List[Dict[str, Any]]:
+        """Scrape content from top results that are in allowed URLs"""
+        scraped_content = []
+        allowed_count = 0
+        
+        for result in search_results:
+            try:
+                logger.info(f"Checking if URL is allowed: {result.url}")
+                
+                # Check if URL is in allowed URLs
+                if not self._is_url_allowed(result.url, db):
+                    logger.info(f"URL not allowed, skipping: {result.url}")
+                    continue
+                
+                allowed_count += 1
+                logger.info(f"URL allowed, scraping content from: {result.url}")
+                
+                # Scrape the webpage
+                content = self._scrape_webpage(result.url)
+                if content:
+                    scraped_content.append({
+                        "url": result.url,
+                        "title": result.title,
+                        "content": content
+                    })
+                    logger.info(f"Successfully scraped content from: {result.url}")
+                
+                # Stop if we have enough allowed URLs (max 5)
+                if allowed_count >= 5:
+                    logger.info(f"Reached maximum allowed URLs limit (5)")
+                    break
+                
+            except Exception as e:
+                logger.error(f"Error scraping {result.url}: {str(e)}")
+                continue
+        
+        logger.info(f"Total URLs checked: {len(search_results)}, Allowed URLs: {allowed_count}, Successfully scraped: {len(scraped_content)}")
+        return scraped_content
+
+    def _is_url_allowed(self, url: str, db: Session) -> bool:
+        """Check if URL is in allowed URLs list from database"""
+        try:
+            from app.services.allowed_url_service import AllowedUrlService
+            
+            # Extract domain from URL
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.lower()
+            
+            # Remove 'www.' prefix if present
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            
+            # Check if domain exists in allowed_urls table
+            allowed_url_service = AllowedUrlService(db)
+            allowed_urls = allowed_url_service.get_all_allowed_urls()
+            
+            # First check regular URLs
+            for allowed_url in allowed_urls:
+                # Skip wildcard URLs for now
+                if '*' in allowed_url.url:
+                    continue
+                    
+                allowed_domain = urlparse(allowed_url.url).netloc.lower()
+                if allowed_domain.startswith('www.'):
+                    allowed_domain = allowed_domain[4:]
+                
+                # Check if domain matches exactly or is a subdomain
+                if domain == allowed_domain or domain.endswith('.' + allowed_domain):
+                    return True
+            
+            # Check for global wildcard "*" (allows any domain)
+            for allowed_url in allowed_urls:
+                if allowed_url.url == '*':
+                    logger.info(f"URL {url} allowed via global wildcard '*'")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking if URL is allowed: {str(e)}")
+            return False
+
+    def _scrape_webpage(self, url: str) -> str:
+        """Scrape content from a single webpage"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            
+            # Extract text content
+            text = soup.get_text()
+            
+            # Clean up whitespace
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = ' '.join(chunk for chunk in chunks if chunk)
+            
+            return text[:10000]  # Limit to first 10k characters
+            
+        except Exception as e:
+            logger.error(f"Error scraping webpage {url}: {str(e)}")
+            return ""
+
+    def _chunk_content(self, scraped_content: List[Dict[str, Any]]) -> List[ContentChunk]:
+        """Break content into chunks"""
+        chunks = []
+        
+        for item in scraped_content:
+            content = item["content"]
+            url = item["url"]
+            
+            # Split content into chunks
+            content_chunks = self._split_text_into_chunks(content)
+            
+            for i, chunk in enumerate(content_chunks):
+                if len(chunks) >= self.max_chunks_per_site * len(scraped_content):
+                    break
+                    
+                chunks.append(ContentChunk(
+                    content=chunk,
+                    source_url=url,
+                    chunk_index=i,
+                    relevance_score=None
+                ))
+        
+        return chunks
+
+    def _split_text_into_chunks(self, text: str) -> List[str]:
+        """Split text into overlapping chunks"""
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            end = start + self.chunk_size
+            chunk = text[start:end]
+            
+            if chunk.strip():
+                chunks.append(chunk.strip())
+            
+            start = end - self.chunk_overlap
+            
+            if start >= len(text):
+                break
+        
+        return chunks
+
+    def _find_relevant_chunks(self, chunks: List[ContentChunk], search_request: SearchRequest) -> List[ContentChunk]:
+        """Find most relevant chunks using similarity search"""
+        try:
+            # Simple keyword-based relevance scoring
+            query_terms = f"{search_request.peptide_name} {search_request.requirements}".lower().split()
+            
+            scored_chunks = []
+            for chunk in chunks:
+                chunk_lower = chunk.content.lower()
+                score = sum(1 for term in query_terms if term in chunk_lower)
+                chunk.relevance_score = score
+                scored_chunks.append(chunk)
+            
+            # Sort by relevance score and take top chunks
+            scored_chunks.sort(key=lambda x: x.relevance_score or 0, reverse=True)
+            
+            # Return top 10 most relevant chunks
+            return scored_chunks[:10]
+            
+        except Exception as e:
+            logger.error(f"Error in similarity search: {str(e)}")
+            return chunks[:10]  # Return first 10 chunks if similarity search fails
+
+    def _generate_llm_response(self, relevant_chunks: List[ContentChunk], search_request: SearchRequest) -> str:
+        """Generate response using OpenAI LLM via direct HTTP requests"""
+        try:
+            if not self.openai_api_key:
+                return "LLM processing not available - API key not configured"
+            
+            # Prepare context from relevant chunks
+            context = "\n\n".join([
+                f"Source {i+1} ({chunk.source_url}):\n{chunk.content}"
+                for i, chunk in enumerate(relevant_chunks)
+            ])
+            
+            # Create prompt
+            prompt = f"""
+            Based on the following information about {search_request.peptide_name}, 
+            please provide a focused response specifically addressing: {search_request.requirements}
+            
+            Information sources:
+            {context}
+            
+            Please provide a concise, well-structured response that directly answers the specific requirement.
+            Focus only on what was asked for - do not include extra information unless directly relevant.
+            Keep the response focused and to the point.
+            """
+            
+            # Call OpenAI Responses API directly via HTTP request
+            headers = {
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            system_instruction = (
+                "You are a helpful assistant specializing in peptide research and information. "
+                "Provide focused, concise responses that directly answer the user's specific question "
+                "without unnecessary details."
+            )
+            full_input = f"{system_instruction}\n\n{prompt}"
+            
+            payload = {
+                "model": "gpt-4o-mini",
+                "input": full_input,
+                "temperature": 0.3,
+                "max_output_tokens": 800
+            }
+            
+            response = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=payload,
+                timeout=45
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Prefer the convenience field if present
+                output_text = data.get("output_text")
+                if isinstance(output_text, str) and output_text.strip():
+                    return output_text.strip()
+                # Fallback: aggregate text segments from "output" array
+                if isinstance(data.get("output"), list):
+                    collected = []
+                    for item in data["output"]:
+                        # Some responses embed message/content arrays
+                        contents = item.get("content") if isinstance(item, dict) else None
+                        if isinstance(contents, list):
+                            for c in contents:
+                                text_val = c.get("text") or c.get("output_text") if isinstance(c, dict) else None
+                                if isinstance(text_val, str):
+                                    collected.append(text_val)
+                    if collected:
+                        return "\n".join(collected).strip()
+                # Last resort: return raw JSON snippet
+                logger.error("OpenAI Responses API returned unexpected format")
+                return json.dumps(data)[:1000]
+            else:
+                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+                return f"Error from OpenAI API: {response.status_code}"
+            
+        except Exception as e:
+            logger.error(f"Error generating LLM response: {str(e)}")
+            return f"Error generating response: {str(e)}"
