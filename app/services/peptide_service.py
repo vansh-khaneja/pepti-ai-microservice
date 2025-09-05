@@ -108,14 +108,22 @@ class PeptideService:
             
             Please answer the user's question based ONLY on the peptide information provided.
             If the question cannot be answered with the available information, say so clearly.
-            Keep your response focused, accurate, and helpful.{restrictions_text}"""
+            
+            IMPORTANT FORMATTING REQUIREMENTS:
+            - Write in plain text only, NO markdown formatting
+            - Use normal paragraphs with proper spacing
+            - Keep response under 1000 characters
+            - Make it easy to read and understand
+            
+            {restrictions_text}"""
             
             user_prompt = f"""Peptide Information for {peptide_name}:
             {peptide_context}
             
             User Question: {user_query}
             
-            Please provide a clear, accurate answer based on the peptide information above."""
+            Please provide a clear, accurate answer based on the peptide information above.
+            Remember: plain text only, no markdown, under 1000 characters, normal paragraphs."""
             
             payload = {
                 "model": "gpt-4o-mini",
@@ -124,7 +132,7 @@ class PeptideService:
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.3,
-                "max_tokens": 500
+                "max_tokens": 400  # Reduced to ensure under 1000 characters
             }
             
             response = requests.post(
@@ -137,8 +145,12 @@ class PeptideService:
             if response.status_code == 200:
                 data = response.json()
                 llm_response = data["choices"][0]["message"]["content"]
+                
+                # Clean up the response to ensure it's plain text and under 1000 characters
+                cleaned_response = self._clean_llm_response(llm_response)
+                
                 logger.info(f"Generated LLM response successfully for peptide: {peptide_name}")
-                return llm_response
+                return cleaned_response
             else:
                 logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
                 raise Exception(f"Failed to generate LLM response: {response.status_code}")
@@ -146,6 +158,35 @@ class PeptideService:
         except Exception as e:
             logger.error(f"Error generating LLM response: {str(e)}")
             raise
+
+    def _clean_llm_response(self, response: str) -> str:
+        """Clean LLM response to ensure plain text format and character limit"""
+        # Remove markdown formatting
+        import re
+        
+        # Remove markdown headers, bold, italic, code blocks, etc.
+        cleaned = re.sub(r'#+\s*', '', response)  # Remove headers
+        cleaned = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned)  # Remove bold
+        cleaned = re.sub(r'\*(.*?)\*', r'\1', cleaned)  # Remove italic
+        cleaned = re.sub(r'`(.*?)`', r'\1', cleaned)  # Remove inline code
+        cleaned = re.sub(r'```.*?```', '', cleaned, flags=re.DOTALL)  # Remove code blocks
+        cleaned = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', cleaned)  # Remove links, keep text
+        
+        # Clean up extra whitespace and ensure proper paragraph formatting
+        cleaned = re.sub(r'\n\s*\n', '\n\n', cleaned)  # Normalize paragraph breaks
+        cleaned = cleaned.strip()
+        
+        # Ensure it's under 1000 characters
+        if len(cleaned) > 1000:
+            # Truncate at word boundary
+            truncated = cleaned[:997] + "..."
+            # Find last complete word
+            last_space = truncated.rfind(' ')
+            if last_space > 900:  # If we can find a good break point
+                truncated = truncated[:last_space] + "..."
+            cleaned = truncated
+        
+        return cleaned
 
     def query_peptide(self, peptide_name: str, user_query: str) -> str:
         """Query a peptide using LLM with the peptide data as context"""

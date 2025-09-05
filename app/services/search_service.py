@@ -303,9 +303,13 @@ class SearchService:
             Information sources:
             {context}
             
-            Please provide a concise, well-structured response that directly answers the specific requirement.
-            Focus only on what was asked for - do not include extra information unless directly relevant.
-            Keep the response focused and to the point.
+            IMPORTANT FORMATTING REQUIREMENTS:
+            - Write in plain text only, NO markdown formatting
+            - Use normal paragraphs with proper spacing
+            - Keep response under  1000characters
+            - Make it easy to read and understand
+            - Focus only on what was asked for - do not include extra information unless directly relevant
+            - Keep the response focused and to the point
             """
             
             # Call OpenAI Responses API directly via HTTP request
@@ -317,7 +321,7 @@ class SearchService:
             system_instruction = (
                 "You are a helpful assistant specializing in peptide research and information. "
                 "Provide focused, concise responses that directly answer the user's specific question "
-                "without unnecessary details."
+                "without unnecessary details. Write in plain text only, no markdown formatting."
             )
             full_input = f"{system_instruction}\n\n{prompt}"
             
@@ -325,7 +329,7 @@ class SearchService:
                 "model": "gpt-4o-mini",
                 "input": full_input,
                 "temperature": 0.3,
-                "max_output_tokens": 800
+                "max_output_tokens": 600  # Reduced to ensure under 1000 characters
             }
             
             response = requests.post(
@@ -340,7 +344,7 @@ class SearchService:
                 # Prefer the convenience field if present
                 output_text = data.get("output_text")
                 if isinstance(output_text, str) and output_text.strip():
-                    return output_text.strip()
+                    return self._clean_llm_response(output_text.strip())
                 # Fallback: aggregate text segments from "output" array
                 if isinstance(data.get("output"), list):
                     collected = []
@@ -353,10 +357,11 @@ class SearchService:
                                 if isinstance(text_val, str):
                                     collected.append(text_val)
                     if collected:
-                        return "\n".join(collected).strip()
+                        combined_text = "\n".join(collected).strip()
+                        return self._clean_llm_response(combined_text)
                 # Last resort: return raw JSON snippet
                 logger.error("OpenAI Responses API returned unexpected format")
-                return json.dumps(data)[:1000]
+                return self._clean_llm_response(json.dumps(data)[:1000])
             else:
                 logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
                 return f"Error from OpenAI API: {response.status_code}"
@@ -364,3 +369,32 @@ class SearchService:
         except Exception as e:
             logger.error(f"Error generating LLM response: {str(e)}")
             return f"Error generating response: {str(e)}"
+
+    def _clean_llm_response(self, response: str) -> str:
+        """Clean LLM response to ensure plain text format and character limit"""
+        # Remove markdown formatting
+        import re
+        
+        # Remove markdown headers, bold, italic, code blocks, etc.
+        cleaned = re.sub(r'#+\s*', '', response)  # Remove headers
+        cleaned = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned)  # Remove bold
+        cleaned = re.sub(r'\*(.*?)\*', r'\1', cleaned)  # Remove italic
+        cleaned = re.sub(r'`(.*?)`', r'\1', cleaned)  # Remove inline code
+        cleaned = re.sub(r'```.*?```', '', cleaned, flags=re.DOTALL)  # Remove code blocks
+        cleaned = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', cleaned)  # Remove links, keep text
+        
+        # Clean up extra whitespace and ensure proper paragraph formatting
+        cleaned = re.sub(r'\n\s*\n', '\n\n', cleaned)  # Normalize paragraph breaks
+        cleaned = cleaned.strip()
+        
+        # Ensure it's under 1000 characters
+        if len(cleaned) > 1000:
+            # Truncate at word boundary
+            truncated = cleaned[:997] + "..."
+            # Find last complete word
+            last_space = truncated.rfind(' ')
+            if last_space > 900:  # If we can find a good break point
+                truncated = truncated[:last_space] + "..."
+            cleaned = truncated
+        
+        return cleaned
