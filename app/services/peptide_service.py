@@ -1,7 +1,7 @@
 import requests
 import logging
 from typing import List, Dict, Any
-from app.models.peptide import PeptideCreate, PeptidePayload
+from app.models.peptide import PeptideCreate, PeptidePayload, PeptideChemicalInfo
 from app.services.qdrant_service import QdrantService
 from app.services.chat_restriction_service import ChatRestrictionService
 from app.core.config import settings
@@ -103,17 +103,24 @@ class PeptideService:
             restrictions_text = self._get_chat_restrictions()
             
             # Create a focused prompt for the specific peptide
-            system_prompt = f"""You are a helpful assistant specializing in peptide research and information. 
-            You have access to detailed information about the peptide {peptide_name}.
+            system_prompt = f"""You are a helpful assistant specializing in peptide research and information.
             
-            Please answer the user's question based ONLY on the peptide information provided.
-            If the question cannot be answered with the available information, say so clearly.
+            CRITICAL INSTRUCTIONS:
+            1. If the user asks basic greetings (hi, hello, how are you) or general questions NOT about peptides, answer simply and briefly without using any peptide context.
+            
+            2. If the user asks about a DIFFERENT peptide than {peptide_name}, respond with: "I don't have information about that specific peptide."
+            
+            3. If the user asks about {peptide_name} but the question is vague or unclear, ask them to be more specific about what they want to know (uses, mechanism, research fields, etc.).
+            
+            4. ONLY use the provided peptide information when the user asks SPECIFIC questions about {peptide_name}.
+            
+            5. Answer precisely and concisely. If asked about "uses", only mention uses. If asked about "mechanism", only mention mechanism.
             
             IMPORTANT FORMATTING REQUIREMENTS:
             - Write in plain text only, NO markdown formatting
             - Use normal paragraphs with proper spacing
             - Keep response under 1000 characters
-            - Make it easy to read and understand
+            - Be direct and to the point
             
             {restrictions_text}"""
             
@@ -305,6 +312,204 @@ class PeptideService:
         except Exception as e:
             logger.warning(f"Could not fetch chat restrictions: {str(e)}")
             return ""
+
+    def get_peptide_chemical_info(self, peptide_name: str) -> PeptideChemicalInfo:
+        """Get chemical information for a peptide using OpenAI function calling"""
+        try:
+            if not self.openai_api_key:
+                raise ValueError("OpenAI API key not configured")
+            
+            headers = {
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Define the function schema for chemical information
+            functions = [
+                {
+                    "name": "get_peptide_info",
+                    "description": "Get details about a peptide such as sequence, IUPAC name, molecular mass, and chemical formula",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "sequence": {
+                                "type": "string",
+                                "description": "Peptide sequence in amino acid short format, e.g., Gly-Glu-Pro"
+                            },
+                            "iupac_name": {
+                                "type": "string",
+                                "description": "IUPAC name in peptide style, e.g., N-acetyl-L-leucyl-L-lysyl..."
+                            },
+                            "molecular_mass": {
+                                "type": "string",
+                                "description": "Molecular mass with units, e.g., 889.01 g/mol"
+                            },
+                            "chemical_formula": {
+                                "type": "string",
+                                "description": "Chemical formula in format like C38H68N10O14"
+                            }
+                        },
+                        "required": ["sequence", "iupac_name", "molecular_mass", "chemical_formula"]
+                    }
+                }
+            ]
+            
+            # Create the prompt for chemical information
+            prompt = f"Provide peptide details for {peptide_name} with sequence, IUPAC name, molecular mass, and chemical formula in the specified formats."
+            
+            # Try function calling first
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are an expert in peptides and biochemistry."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "functions": functions,
+                "function_call": {"name": "get_peptide_info"},
+                "temperature": 0.1
+            }
+            
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"OpenAI response: {data}")
+                
+                # Extract function call result
+                if "choices" in data and len(data["choices"]) > 0:
+                    choice = data["choices"][0]
+                    if "message" in choice and "function_call" in choice["message"]:
+                        function_call = choice["message"]["function_call"]
+                        logger.info(f"Function call received: {function_call}")
+                        if function_call["name"] == "get_peptide_info":
+                            import json
+                            args = json.loads(function_call["arguments"])
+                            logger.info(f"Function arguments: {args}")
+                            
+                            return PeptideChemicalInfo(
+                                peptide_name=peptide_name,
+                                sequence=args.get("sequence"),
+                                chemical_formula=args.get("chemical_formula"),
+                                molecular_mass=args.get("molecular_mass"),
+                                iupac_name=args.get("iupac_name")
+                            )
+                    elif "message" in choice and "content" in choice["message"]:
+                        # Fallback: try to parse regular response
+                        content = choice["message"]["content"]
+                        logger.info(f"Regular response content: {content}")
+                        
+                        # Try to extract information from the text response
+                        return self._parse_chemical_info_from_text(content, peptide_name)
+                
+                # Final fallback if function call didn't work
+                logger.warning("Function call not returned, using fallback response")
+                return PeptideChemicalInfo(
+                    peptide_name=peptide_name,
+                    sequence=None,
+                    chemical_formula=None,
+                    molecular_mass=None,
+                    iupac_name=None
+                )
+            else:
+                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+                raise Exception(f"Failed to get chemical information: {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"Error getting chemical information for {peptide_name}: {str(e)}")
+            raise
+
+    def _parse_chemical_info_from_text(self, content: str, peptide_name: str) -> PeptideChemicalInfo:
+        """Parse chemical information from text response as fallback"""
+        import re
+        
+        # Initialize with None values
+        sequence = None
+        chemical_formula = None
+        molecular_mass = None
+        iupac_name = None
+        
+        try:
+            logger.info(f"Parsing content: {content}")
+            
+            # Try to extract sequence (look for patterns like single letter codes)
+            sequence_match = re.search(r'[A-Z]{10,}', content)
+            if sequence_match:
+                sequence = sequence_match.group()
+            
+            # Try to extract chemical formula (more flexible patterns)
+            # Look for C followed by numbers, then H, then more elements
+            formula_patterns = [
+                r'C\d+H\d+[A-Z]*\d*[A-Z]*\d*[A-Z]*\d*',  # C10H15N3O5S2
+                r'C\d+H\d+[A-Z]\d*[A-Z]*\d*',  # C10H15N3O5
+                r'C\d+H\d+[A-Z]\d+',  # C10H15N3
+                r'C\d+H\d+',  # C10H15
+            ]
+            
+            for pattern in formula_patterns:
+                formula_match = re.search(pattern, content)
+                if formula_match:
+                    chemical_formula = formula_match.group()
+                    break
+            
+            # Try to extract molecular mass (more flexible patterns)
+            mass_patterns = [
+                r'(\d+\.?\d*)\s*(?:Da|Daltons?|g/mol)',  # 1419.5 Da
+                r'(\d+\.?\d*)\s*(?:molecular mass|mass|weight)',  # 1419.5 molecular mass
+                r'mass[:\s]*(\d+\.?\d*)',  # mass: 1419.5
+                r'(\d+\.?\d*)\s*(?:amu|u)',  # 1419.5 amu
+                r'(\d+\.?\d*)\s*(?:g/mol)',  # 1419.5 g/mol
+            ]
+            
+            for pattern in mass_patterns:
+                mass_match = re.search(pattern, content, re.IGNORECASE)
+                if mass_match:
+                    try:
+                        molecular_mass = float(mass_match.group(1))
+                        break
+                    except ValueError:
+                        continue
+            
+            # Try to extract IUPAC name (more flexible patterns)
+            iupac_patterns = [
+                r'IUPAC[:\s]*([A-Z][a-z]+(?:[A-Z][a-z]+)*)',  # IUPAC: Some Chemical Name
+                r'name[:\s]*([A-Z][a-z]+(?:[A-Z][a-z]+)*)',  # name: Some Chemical Name
+                r'([A-Z][a-z]+(?:[A-Z][a-z]+){4,})',  # Very long chemical names (IUPAC names are typically long)
+                r'([A-Z][a-z]+(?:[A-Z][a-z]+){3,})',  # Long chemical names
+                r'([A-Z][a-z]+(?:[A-Z][a-z]+){2,})',  # Medium chemical names
+                # Look for systematic names with numbers and hyphens
+                r'([A-Z][a-z]+(?:[A-Z][a-z]+)*\d+(?:[A-Z][a-z]+)*)',  # Names with numbers
+                r'([A-Z][a-z]+(?:[A-Z][a-z]+)*-(?:[A-Z][a-z]+)*)',  # Names with hyphens
+            ]
+            
+            for pattern in iupac_patterns:
+                iupac_match = re.search(pattern, content)
+                if iupac_match and len(iupac_match.group(1)) > 15:
+                    iupac_name = iupac_match.group(1)
+                    break
+            
+            logger.info(f"Parsed from text - Sequence: {sequence}, Formula: {chemical_formula}, Mass: {molecular_mass}, IUPAC: {iupac_name}")
+            
+        except Exception as e:
+            logger.warning(f"Error parsing chemical info from text: {str(e)}")
+        
+        return PeptideChemicalInfo(
+            peptide_name=peptide_name,
+            sequence=sequence,
+            chemical_formula=chemical_formula,
+            molecular_mass=molecular_mass,
+            iupac_name=iupac_name
+        )
 
     def find_similar_peptides(self, peptide_name: str, top_k: int = 4) -> List[Dict[str, Any]]:
         """Find similar peptides based on vector similarity"""

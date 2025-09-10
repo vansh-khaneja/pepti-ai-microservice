@@ -27,3 +27,18 @@ class PeptideResponse(BaseModel):
     message: str = "Operation completed successfully"
     data: Optional[dict] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class PeptideChemicalInfo(BaseModel):
+    """Model for peptide chemical information"""
+    peptide_name: str = Field(..., description="Name of the peptide")
+    sequence: Optional[str] = Field(None, description="Amino acid sequence")
+    chemical_formula: Optional[str] = Field(None, description="Chemical formula")
+    molecular_mass: Optional[str] = Field(None, description="Molecular mass with units")
+    iupac_name: Optional[str] = Field(None, description="IUPAC name")
+
+class PeptideChemicalResponse(BaseModel):
+    """Response model for peptide chemical information"""
+    success: bool = True
+    message: str = "Chemical information retrieved successfully"
+    data: PeptideChemicalInfo
+    timestamp: datetime = Field(default_factory=datetime.utcnow)

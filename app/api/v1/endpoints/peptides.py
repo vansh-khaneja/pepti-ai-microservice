@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from app.services.peptide_service import PeptideService
 from app.core.database import get_db
-from app.models.peptide import PeptideCreate, PeptideResponse
+from app.models.peptide import PeptideCreate, PeptideResponse, PeptideChemicalResponse
 from app.utils.helpers import log_api_call
 from typing import List, Dict, Any
 
@@ -184,4 +184,43 @@ async def get_peptide_recommendations(
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to get peptide recommendations: {str(e)}"
+        )
+
+@router.get("/{peptide_name}/chemical-info", response_model=PeptideChemicalResponse, tags=["peptides"])
+async def get_peptide_chemical_info(
+    peptide_name: str
+):
+    """
+    Get detailed chemical information for a specific peptide
+    
+    This endpoint:
+    1. Takes a peptide name as input
+    2. Uses OpenAI function calling to get chemical data
+    3. Returns sequence, chemical formula, molecular mass, and IUPAC name
+    """
+    try:
+        # Log the API call
+        log_api_call(f"/peptides/{peptide_name}/chemical-info", "GET")
+        
+        # Initialize peptide service
+        peptide_service = PeptideService()
+        
+        # Get chemical information
+        chemical_info = peptide_service.get_peptide_chemical_info(peptide_name)
+        
+        # Return the response
+        return PeptideChemicalResponse(
+            success=True,
+            message=f"Chemical information retrieved successfully for {peptide_name}",
+            data=chemical_info
+        )
+        
+    except Exception as e:
+        # Log the error
+        log_api_call(f"/peptides/{peptide_name}/chemical-info", "GET", error=str(e))
+        
+        # Return error response
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to get chemical information for {peptide_name}: {str(e)}"
         )
