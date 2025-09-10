@@ -341,27 +341,24 @@ class SearchService:
             
             if response.status_code == 200:
                 data = response.json()
-                # Prefer the convenience field if present
-                output_text = data.get("output_text")
-                if isinstance(output_text, str) and output_text.strip():
-                    return self._clean_llm_response(output_text.strip())
-                # Fallback: aggregate text segments from "output" array
-                if isinstance(data.get("output"), list):
-                    collected = []
-                    for item in data["output"]:
-                        # Some responses embed message/content arrays
-                        contents = item.get("content") if isinstance(item, dict) else None
-                        if isinstance(contents, list):
-                            for c in contents:
-                                text_val = c.get("text") or c.get("output_text") if isinstance(c, dict) else None
-                                if isinstance(text_val, str):
-                                    collected.append(text_val)
-                    if collected:
-                        combined_text = "\n".join(collected).strip()
-                        return self._clean_llm_response(combined_text)
-                # Last resort: return raw JSON snippet
-                logger.error("OpenAI Responses API returned unexpected format")
-                return self._clean_llm_response(json.dumps(data)[:1000])
+                # Parse Responses API response format
+                if data.get("status") == "completed" and "output" in data:
+                    # Extract text from the output array
+                    output_text = ""
+                    for output_item in data["output"]:
+                        if output_item.get("type") == "message" and "content" in output_item:
+                            for content_item in output_item["content"]:
+                                if content_item.get("type") == "output_text" and "text" in content_item:
+                                    output_text += content_item["text"]
+                    
+                    if output_text.strip():
+                        return self._clean_llm_response(output_text.strip())
+                    else:
+                        logger.error("No text found in Responses API output")
+                        return self._clean_llm_response("No response generated")
+                else:
+                    logger.error(f"OpenAI Responses API returned unexpected status: {data.get('status')}")
+                    return self._clean_llm_response(json.dumps(data)[:1000])
             else:
                 logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
                 return f"Error from OpenAI API: {response.status_code}"

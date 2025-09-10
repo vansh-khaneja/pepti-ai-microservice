@@ -125,18 +125,18 @@ class PeptideService:
             Please provide a clear, accurate answer based on the peptide information above.
             Remember: plain text only, no markdown, under 1000 characters, normal paragraphs."""
             
+            # Combine system and user prompts for Responses API
+            full_input = f"{system_prompt}\n\n{user_prompt}"
+            
             payload = {
                 "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
+                "input": full_input,
                 "temperature": 0.3,
-                "max_tokens": 400  # Reduced to ensure under 1000 characters
+                "max_output_tokens": 400  # Reduced to ensure under 1000 characters
             }
             
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
+                "https://api.openai.com/v1/responses",
                 headers=headers,
                 json=payload,
                 timeout=45
@@ -144,13 +144,27 @@ class PeptideService:
             
             if response.status_code == 200:
                 data = response.json()
-                llm_response = data["choices"][0]["message"]["content"]
-                
-                # Clean up the response to ensure it's plain text and under 1000 characters
-                cleaned_response = self._clean_llm_response(llm_response)
-                
-                logger.info(f"Generated LLM response successfully for peptide: {peptide_name}")
-                return cleaned_response
+                # Parse Responses API response format
+                if data.get("status") == "completed" and "output" in data:
+                    # Extract text from the output array
+                    output_text = ""
+                    for output_item in data["output"]:
+                        if output_item.get("type") == "message" and "content" in output_item:
+                            for content_item in output_item["content"]:
+                                if content_item.get("type") == "output_text" and "text" in content_item:
+                                    output_text += content_item["text"]
+                    
+                    if output_text.strip():
+                        # Clean up the response to ensure it's plain text and under 1000 characters
+                        cleaned_response = self._clean_llm_response(output_text.strip())
+                        logger.info(f"Generated LLM response successfully for peptide: {peptide_name}")
+                        return cleaned_response
+                    else:
+                        logger.error("No text found in Responses API output")
+                        raise Exception("No response generated from Responses API")
+                else:
+                    logger.error(f"OpenAI Responses API returned unexpected status: {data.get('status')}")
+                    raise Exception(f"Unexpected response status: {data.get('status')}")
             else:
                 logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
                 raise Exception(f"Failed to generate LLM response: {response.status_code}")
