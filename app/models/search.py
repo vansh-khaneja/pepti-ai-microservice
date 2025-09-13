@@ -20,11 +20,14 @@ class ContentChunk(BaseModel):
     source_url: str
     chunk_index: int
     relevance_score: Optional[float] = None
+    confidence_score: Optional[float] = Field(None, description="Confidence score as percentage (0-100)")
 
 class SourceSite(BaseModel):
     """Model for source site information"""
     title: str
     url: str
+    similarity_score: Optional[float] = Field(None, description="Relevance score for this source (0-1)")
+    content_length: Optional[int] = Field(None, description="Length of scraped content from this source")
 
 class SearchResponse(BaseModel):
     """Model for search response"""

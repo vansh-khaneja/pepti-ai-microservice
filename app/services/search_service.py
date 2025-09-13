@@ -51,17 +51,23 @@ class SearchService:
             relevant_chunks = self._find_relevant_chunks(content_chunks, search_request)
             logger.info(f"Found {len(relevant_chunks)} relevant chunks")
             
+            # Check if no chunks meet the confidence threshold
+            if not relevant_chunks:
+                logger.warning("No chunks found that meet the confidence score threshold")
+                return SearchResponse(
+                    peptide_name=search_request.peptide_name,
+                    requirements=search_request.requirements,
+                    generated_response="No content found that matches the specified confidence score threshold. Please try adjusting the CONFIDENCE_SCORE setting or refine your search query.",
+                    source_sites=[],
+                    search_timestamp=datetime.utcnow()
+                )
+            
             # Step 5: Generate LLM response
             generated_response = self._generate_llm_response(relevant_chunks, search_request)
             logger.info("Generated LLM response successfully")
             
-            # Step 6: Create final response with only generated response and source sites
-            source_sites = []
-            for item in scraped_content:
-                source_sites.append({
-                    "title": item["title"],
-                    "url": item["url"]
-                })
+            # Step 6: Create final response with similarity scores for source sites
+            source_sites = self._calculate_source_similarity_scores(scraped_content, search_request)
             
             return SearchResponse(
                 peptide_name=search_request.peptide_name,
@@ -261,23 +267,45 @@ class SearchService:
         return chunks
 
     def _find_relevant_chunks(self, chunks: List[ContentChunk], search_request: SearchRequest) -> List[ContentChunk]:
-        """Find most relevant chunks using similarity search"""
+        """Find most relevant chunks using similarity search with confidence score filtering"""
         try:
+            from app.core.config import settings
+            
             # Simple keyword-based relevance scoring
             query_terms = f"{search_request.peptide_name} {search_request.requirements}".lower().split()
+            min_confidence = settings.CONFIDENCE_SCORE
             
             scored_chunks = []
             for chunk in chunks:
                 chunk_lower = chunk.content.lower()
                 score = sum(1 for term in query_terms if term in chunk_lower)
+                
+                # Calculate confidence score as percentage (0-100)
+                max_possible_score = len(query_terms)
+                confidence_score = (score / max_possible_score * 100) if max_possible_score > 0 else 0
+                
                 chunk.relevance_score = score
+                chunk.confidence_score = confidence_score
                 scored_chunks.append(chunk)
             
-            # Sort by relevance score and take top chunks
-            scored_chunks.sort(key=lambda x: x.relevance_score or 0, reverse=True)
+            # Filter chunks by confidence score
+            filtered_chunks = [
+                chunk for chunk in scored_chunks 
+                if chunk.confidence_score >= min_confidence
+            ]
             
-            # Return top 10 most relevant chunks
-            return scored_chunks[:10]
+            # Sort by relevance score (highest first)
+            filtered_chunks.sort(key=lambda x: x.relevance_score or 0, reverse=True)
+            
+            logger.info(f"Chunks filtered: {len(scored_chunks)} total, {len(filtered_chunks)} above {min_confidence}% confidence")
+            
+            # If no chunks meet the threshold, log the highest confidence found
+            if not filtered_chunks and scored_chunks:
+                highest_confidence = max(chunk.confidence_score for chunk in scored_chunks)
+                logger.warning(f"No chunks meet {min_confidence}% confidence threshold. Highest confidence found: {highest_confidence:.1f}%")
+            
+            # Return top 10 most relevant chunks that meet confidence threshold
+            return filtered_chunks[:10]
             
         except Exception as e:
             logger.error(f"Error in similarity search: {str(e)}")
@@ -395,3 +423,36 @@ class SearchService:
             cleaned = truncated
         
         return cleaned
+
+    def _calculate_source_similarity_scores(self, scraped_content: List[Dict[str, Any]], search_request: SearchRequest) -> List[Dict[str, Any]]:
+        """Calculate similarity scores for each source site"""
+        source_sites = []
+        query_terms = f"{search_request.peptide_name} {search_request.requirements}".lower().split()
+        
+        for item in scraped_content:
+            content = item["content"].lower()
+            title = item["title"].lower()
+            
+            # Calculate similarity score based on keyword matches
+            content_score = sum(1 for term in query_terms if term in content)
+            title_score = sum(1 for term in query_terms if term in title)
+            
+            # Weight title matches more heavily
+            total_score = (content_score * 0.7) + (title_score * 0.3)
+            
+            # Normalize score (0-1 range)
+            max_possible_score = len(query_terms) * 0.7 + len(query_terms) * 0.3
+            similarity_score = min(total_score / max_possible_score, 1.0) if max_possible_score > 0 else 0.0
+            
+            source_sites.append({
+                "title": item["title"],
+                "url": item["url"],
+                "similarity_score": round(similarity_score, 3),
+                "content_length": len(item["content"])
+            })
+        
+        # Sort by similarity score (highest first)
+        source_sites.sort(key=lambda x: x["similarity_score"], reverse=True)
+        
+        logger.info(f"Calculated similarity scores for {len(source_sites)} sources")
+        return source_sites

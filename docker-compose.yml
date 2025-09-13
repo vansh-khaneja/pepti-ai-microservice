@@ -19,6 +19,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SERP_API_KEY: ${SERP_API_KEY}
       
+      # Search settings
+      CONFIDENCE_SCORE: ${CONFIDENCE_SCORE:-70}
+      
       # Server settings
       HOST: 0.0.0.0
       PORT: 8000

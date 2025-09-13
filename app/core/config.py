@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     SERP_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     
+    # Search settings
+    CONFIDENCE_SCORE: int = 70  # Minimum confidence score for chunk relevance (0-100)
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

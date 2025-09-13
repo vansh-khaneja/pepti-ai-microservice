@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 from datetime import datetime, timedelta
 
 class AnalyticsService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session = None):
         self.db = db
     
     def track_endpoint_usage(self, usage_data: EndpointUsageCreate) -> EndpointUsage:
@@ -23,12 +23,12 @@ class AnalyticsService:
             logger.error(f"Error tracking endpoint usage: {str(e)}")
             raise
     
-    def get_daily_endpoint_usage(self, days: int = 7) -> List[Dict[str, Any]]:
+    def get_daily_endpoint_usage(self, db: Session, days: int = 7) -> List[Dict[str, Any]]:
         """Get endpoint usage per day for last N days"""
         try:
             start_date = datetime.now() - timedelta(days=days)
             
-            daily_usage = self.db.query(
+            daily_usage = db.query(
                 func.date(EndpointUsage.created_at).label('date'),
                 EndpointUsage.endpoint_path,
                 EndpointUsage.method,
@@ -69,12 +69,12 @@ class AnalyticsService:
             logger.error(f"Error getting daily endpoint usage: {str(e)}")
             raise
     
-    def get_weekly_endpoint_usage(self, weeks: int = 1) -> List[Dict[str, Any]]:
+    def get_weekly_endpoint_usage(self, db: Session, weeks: int = 1) -> List[Dict[str, Any]]:
         """Get endpoint usage per week for last N weeks"""
         try:
             start_date = datetime.now() - timedelta(weeks=weeks)
             
-            weekly_usage = self.db.query(
+            weekly_usage = db.query(
                 func.date_trunc('week', EndpointUsage.created_at).label('week'),
                 EndpointUsage.endpoint_path,
                 EndpointUsage.method,
@@ -115,12 +115,12 @@ class AnalyticsService:
             logger.error(f"Error getting weekly endpoint usage: {str(e)}")
             raise
     
-    def get_monthly_overall_usage(self, months: int = 12) -> List[Dict[str, Any]]:
+    def get_monthly_endpoint_usage(self, db: Session, months: int = 12) -> List[Dict[str, Any]]:
         """Get overall endpoint usage per month for last N months"""
         try:
             start_date = datetime.now() - timedelta(days=months*30)
             
-            monthly_usage = self.db.query(
+            monthly_usage = db.query(
                 func.date_trunc('month', EndpointUsage.created_at).label('month'),
                 func.count(EndpointUsage.id).label('total_hits'),
                 func.count(func.distinct(EndpointUsage.endpoint_path)).label('unique_endpoints')
