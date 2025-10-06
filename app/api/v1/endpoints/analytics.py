@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.analytics_service import AnalyticsService
+from typing import Optional
 from app.models.analytics import EndpointUsageCreate
 from app.utils.helpers import logger, log_api_call
 
@@ -135,4 +136,31 @@ async def track_endpoint_usage(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to track endpoint usage: {str(e)}"
+        )
+
+
+@router.get("/external-summary", tags=["analytics"])
+async def get_external_api_summary(
+    hours: int = Query(24, ge=1, le=168, description="Lookback window in hours (default: 24)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Summarize external API usage (QDRANT, OPENAI, SERPAPI, TAVILY) over the lookback window.
+    """
+    try:
+        from app.utils.helpers import log_api_call
+        log_api_call("/analytics/external-summary", f"hours={hours}")
+
+        analytics_service = AnalyticsService(db)
+        summaries = analytics_service.summarize_external_usage(since_hours=hours)
+        return {
+            "success": True,
+            "message": "External API usage summary",
+            "data": [s.model_dump() for s in summaries]
+        }
+    except Exception as e:
+        logger.error(f"Error getting external API summary: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get external API summary: {str(e)}"
         )

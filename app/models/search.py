@@ -18,6 +18,7 @@ class ContentChunk(BaseModel):
     """Model for content chunk"""
     content: str
     source_url: str
+    title: str
     chunk_index: int
     relevance_score: Optional[float] = None
     confidence_score: Optional[float] = Field(None, description="Confidence score as percentage (0-100)")

@@ -3,7 +3,9 @@ from .allowed_url import AllowedUrl, AllowedUrlCreate, AllowedUrlSchema, Allowed
 from .chat_restriction import ChatRestriction, ChatRestrictionCreate, ChatRestrictionSchema, ChatRestrictionResponse, ChatRestrictionListResponse
 from .peptide import PeptideCreate, PeptidePayload, PeptideResponse, PeptideChemicalInfo, PeptideChemicalResponse
 from .search import SearchRequest, SearchResult, ContentChunk, SourceSite, SearchResponse, SearchAPIResponse
-from .analytics import EndpointUsage, EndpointUsageCreate, EndpointUsageResponse
+from .analytics import EndpointUsage, EndpointUsageCreate, EndpointUsageResponse, ExternalApiUsage, ExternalApiUsageCreate, ExternalApiUsageSummary
+from .chat_session import ChatSession, ChatMessage
+from .peptide_info_session import PeptideInfoSession, PeptideInfoMessage
 
 __all__ = [
     "AllowedUrl",
@@ -29,5 +31,12 @@ __all__ = [
     "SearchAPIResponse",
     "EndpointUsage",
     "EndpointUsageCreate",
-    "EndpointUsageResponse"
+    "EndpointUsageResponse",
+    "ExternalApiUsage",
+    "ExternalApiUsageCreate",
+    "ExternalApiUsageSummary",
+    "ChatSession",
+    "ChatMessage",
+    "PeptideInfoSession",
+    "PeptideInfoMessage"
 ]

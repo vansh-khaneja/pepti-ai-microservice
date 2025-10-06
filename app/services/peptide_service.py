@@ -10,15 +10,9 @@ from app.utils.helpers import logger
 
 class PeptideService:
     def __init__(self):
-        """Initialize peptide service with Qdrant and OpenAI integration"""
-        self.qdrant_service = QdrantService()
+        """Initialize peptide service with lazy Qdrant usage for OpenAI-only endpoints"""
+        self.qdrant_service: QdrantService | None = None
         self.openai_api_key = settings.OPENAI_API_KEY
-        
-        # Ensure the name index exists for efficient searching
-        try:
-            self.qdrant_service.ensure_name_index()
-        except Exception as e:
-            logger.warning(f"Could not ensure name index: {str(e)}")
 
     def create_peptide(self, peptide_data: PeptideCreate) -> Dict[str, Any]:
         """Create a new peptide entry in Qdrant"""
@@ -36,8 +30,9 @@ class PeptideService:
             # Generate embedding for the peptide text
             embedding = self._generate_embedding(peptide_payload.to_text())
             
-            # Store in Qdrant
-            point_id = self.qdrant_service.store_peptide(peptide_payload, embedding)
+            # Ensure Qdrant and store
+            self._ensure_qdrant()
+            point_id = self.qdrant_service.store_peptide(peptide_payload, embedding)  # type: ignore[attr-defined]
             
             logger.info(f"Peptide '{peptide_data.name}' created successfully with ID: {point_id}")
             
@@ -48,6 +43,50 @@ class PeptideService:
             
         except Exception as e:
             logger.error(f"Error creating peptide: {str(e)}")
+            raise
+
+    def update_peptide(self, original_name: str, peptide_data: PeptideCreate) -> Dict[str, Any]:
+        """Update an existing peptide by deleting old entry and creating a new one.
+
+        We delete the peptide by its original name from Qdrant, then insert a new
+        entry using the provided `peptide_data` (which may include a new name and
+        updated fields). Embedding is regenerated from updated text.
+        """
+        try:
+            logger.info(f"Updating peptide '{original_name}' -> '{peptide_data.name}'")
+
+            self._ensure_qdrant()
+            # Delete old entry if it exists (ignore if not found)
+            try:
+                deleted = self.qdrant_service.delete_peptide(original_name)  # type: ignore[attr-defined]
+                if deleted:
+                    logger.info(f"Deleted old peptide entry: {original_name}")
+                else:
+                    logger.warning(f"Old peptide '{original_name}' not found; proceeding to create new entry")
+            except Exception as e:
+                # Don't fail the whole update on delete error; surface error
+                logger.warning(f"Delete during update failed for '{original_name}': {str(e)}")
+                # Continue to create the new entry regardless
+
+            # Create payload from updated data
+            peptide_payload = PeptidePayload(
+                name=peptide_data.name,
+                overview=peptide_data.overview,
+                mechanism_of_actions=peptide_data.mechanism_of_actions,
+                potential_research_fields=peptide_data.potential_research_fields
+            )
+
+            # Generate fresh embedding and store
+            embedding = self._generate_embedding(peptide_payload.to_text())
+            point_id = self.qdrant_service.store_peptide(peptide_payload, embedding)  # type: ignore[attr-defined]
+
+            logger.info(f"Peptide updated. New name='{peptide_data.name}', point_id='{point_id}'")
+            return {
+                "name": peptide_data.name,
+                "message": "Peptide updated successfully in vector database"
+            }
+        except Exception as e:
+            logger.error(f"Error updating peptide '{original_name}': {str(e)}")
             raise
 
     def _generate_embedding(self, text: str) -> List[float]:
@@ -63,7 +102,7 @@ class PeptideService:
             
             payload = {
                 "input": text,
-                "model": "text-embedding-3-small"
+                "model": "text-embedding-3-large"
             }
             
             response = requests.post(
@@ -76,9 +115,8 @@ class PeptideService:
             if response.status_code == 200:
                 data = response.json()
                 embedding = data["data"][0]["embedding"]
-                # Truncate to 768 dimensions to match your Qdrant collection
-                embedding = embedding[:768]
-                logger.info(f"Generated embedding successfully for text of length: {len(text)}, truncated to {len(embedding)} dimensions")
+                # Use full embedding size from model (expected 3072 for text-embedding-3-large)
+                logger.info(f"Generated embedding successfully for text length {len(text)}, dimensions: {len(embedding)}")
                 return embedding
             else:
                 logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
@@ -136,7 +174,7 @@ class PeptideService:
             full_input = f"{system_prompt}\n\n{user_prompt}"
             
             payload = {
-                "model": "gpt-4o-mini",
+                "model": "gpt-4o",
                 "input": full_input,
                 "temperature": 0.3,
                 "max_output_tokens": 400  # Reduced to ensure under 1000 characters
@@ -209,25 +247,66 @@ class PeptideService:
         
         return cleaned
 
-    def query_peptide(self, peptide_name: str, user_query: str) -> str:
-        """Query a peptide using LLM with the peptide data as context"""
+    def _ensure_qdrant(self) -> None:
+        """Lazily initialize Qdrant service and ensure index once."""
+        if self.qdrant_service is None:
+            try:
+                # QdrantService.__init__ already ensures collection and (once per process) name index as needed.
+                self.qdrant_service = QdrantService()
+            except Exception as e:
+                logger.error(f"Failed to initialize Qdrant service: {str(e)}")
+                raise
+
+    def query_peptide(self, peptide_name: str, user_query: str) -> Dict[str, Any]:
+        """Query a peptide using LLM with the peptide data as context, with LLM judge and Tavily fallback"""
         try:
             logger.info(f"Querying peptide: {peptide_name} with question: {user_query}")
             
             # Get peptide data from Qdrant
-            peptide_data = self.qdrant_service.get_peptide_by_name(peptide_name)
+            self._ensure_qdrant()
+            peptide_data = self.qdrant_service.get_peptide_by_name(peptide_name)  # type: ignore[attr-defined]
             
             if not peptide_data:
-                raise ValueError(f"Peptide '{peptide_name}' not found")
+                # Peptide not found in DB; use Tavily fallback
+                logger.warning(f"Peptide '{peptide_name}' not found in database; invoking Tavily fallback")
+                tavily_content, tavily_score = self._tavily_fetch_content(f"{peptide_name} {user_query}")
+                answer = self._generate_final_answer_from_content(user_query, tavily_content, peptide_name_hint=peptide_name)
+                return {
+                    "llm_response": answer,
+                    "peptide_name": peptide_name,
+                    "similarity_score": tavily_score,
+                    "peptide_context": "\n\n".join(tavily_content) if tavily_content else None,
+                    "source": "tavily"
+                }
             
             # Extract the text content for LLM context
             text_content = peptide_data["payload"]["text_content"]
             
-            # Generate LLM response using the peptide context
-            llm_response = self._generate_llm_response(text_content, user_query, peptide_name)
+            # Always use LLM judge for peptide-specific queries to ensure relevance
+            logger.info(f"Invoking LLM judge for peptide-specific query: {peptide_name}")
+            judge_yes = self._judge_relevance_yes_no(user_query, text_content, peptide_name)
             
-            logger.info(f"Successfully generated LLM response for peptide: {peptide_name}")
-            return llm_response
+            if judge_yes:
+                logger.info("Judge said YES; using stored peptide context")
+                llm_response = self._generate_llm_response(text_content, user_query, peptide_name)
+                return {
+                    "llm_response": llm_response,
+                    "peptide_name": peptide_name,
+                    "similarity_score": None,
+                    "peptide_context": text_content,
+                    "source": "qdrant+judge"
+                }
+            else:
+                logger.info("Judge said NO; falling back to Tavily search")
+                tavily_content, tavily_score = self._tavily_fetch_content(f"{peptide_name} {user_query}")
+                answer = self._generate_final_answer_from_content(user_query, tavily_content, peptide_name_hint=peptide_name)
+                return {
+                    "llm_response": answer,
+                    "peptide_name": peptide_name,
+                    "similarity_score": tavily_score,
+                    "peptide_context": "\n\n".join(tavily_content) if tavily_content else None,
+                    "source": "tavily"
+                }
             
         except Exception as e:
             logger.error(f"Error querying peptide: {str(e)}")
@@ -252,7 +331,7 @@ class PeptideService:
             raise
 
     def search_and_answer(self, query: str) -> Dict[str, Any]:
-        """Search for peptides using vector similarity and answer queries"""
+        """Search for peptides using vector similarity and answer queries with LLM-judge and Tavily fallback"""
         try:
             logger.info(f"Searching peptides with query: {query}")
             
@@ -260,10 +339,21 @@ class PeptideService:
             query_embedding = self._generate_embedding(query)
             
             # Search for the most similar peptide in Qdrant
-            search_result = self.qdrant_service.search_peptides(query_embedding, limit=1)
+            self._ensure_qdrant()
+            search_result = self.qdrant_service.search_peptides(query_embedding, limit=1)  # type: ignore[attr-defined]
             
             if not search_result:
-                raise ValueError("No peptides found in the database")
+                # No candidates; go directly to Tavily fallback path
+                logger.warning("No peptides found; invoking Tavily fallback")
+                tavily_content, tavily_score = self._tavily_fetch_content(query)
+                answer = self._generate_final_answer_from_content(query, tavily_content, peptide_name_hint=None)
+                return {
+                    "llm_response": answer,
+                    "peptide_name": None,
+                    "similarity_score": tavily_score,
+                    "peptide_context": "\n\n".join(tavily_content) if tavily_content else None,
+                    "source": "tavily"
+                }
             
             # Get the best match
             best_match = search_result[0]
@@ -272,15 +362,43 @@ class PeptideService:
             peptide_context = best_match["payload"]["text_content"]
             
             logger.info(f"Found best matching peptide: {peptide_name} with score: {similarity_score}")
-            
-            # Generate LLM response using the peptide context
+
+            # If below similarity threshold, ask LLM judge if the context is relevant
+            from app.core.config import settings
+            threshold = settings.MIN_VECTOR_SIMILARITY
+            if similarity_score is None or similarity_score < threshold:
+                logger.info(f"Similarity {similarity_score} < threshold {threshold}; invoking LLM judge")
+                judge_yes = self._judge_relevance_yes_no(query, peptide_context, peptide_name)
+                if judge_yes:
+                    logger.info("Judge said YES; using current context")
+                    llm_response = self._generate_llm_response(peptide_context, query, peptide_name)
+                    return {
+                        "llm_response": llm_response,
+                        "peptide_name": peptide_name,
+                        "similarity_score": round(similarity_score, 6) if similarity_score is not None else None,
+                        "peptide_context": peptide_context,
+                        "source": "qdrant+judge"
+                    }
+                else:
+                    logger.info("Judge said NO; falling back to Tavily search")
+                    tavily_content, tavily_score = self._tavily_fetch_content(query)
+                    answer = self._generate_final_answer_from_content(query, tavily_content, peptide_name_hint=peptide_name)
+                    return {
+                        "llm_response": answer,
+                        "peptide_name": peptide_name,
+                        "similarity_score": tavily_score,
+                        "peptide_context": "\n\n".join(tavily_content) if tavily_content else None,
+                        "source": "tavily"
+                    }
+
+            # Above threshold: use Qdrant context directly
             llm_response = self._generate_llm_response(peptide_context, query, peptide_name)
-            
             return {
                 "llm_response": llm_response,
                 "peptide_name": peptide_name,
-                "similarity_score": similarity_score,
-                "peptide_context": peptide_context
+                "similarity_score": round(similarity_score, 6),
+                "peptide_context": peptide_context,
+                "source": "qdrant"
             }
             
         except Exception as e:
@@ -313,203 +431,286 @@ class PeptideService:
             logger.warning(f"Could not fetch chat restrictions: {str(e)}")
             return ""
 
-    def get_peptide_chemical_info(self, peptide_name: str) -> PeptideChemicalInfo:
-        """Get chemical information for a peptide using OpenAI function calling"""
+    def _judge_relevance_yes_no(self, user_query: str, candidate_content: str, peptide_name: str | None) -> bool:
+        """Ask LLM to judge if candidate_content is relevant to user_query; expect 'Yes' or 'No'"""
         try:
             if not self.openai_api_key:
                 raise ValueError("OpenAI API key not configured")
-            
+
             headers = {
                 "Authorization": f"Bearer {self.openai_api_key}",
                 "Content-Type": "application/json"
             }
-            
-            # Define the function schema for chemical information
-            functions = [
-                {
-                    "name": "get_peptide_info",
-                    "description": "Get details about a peptide such as sequence, IUPAC name, molecular mass, and chemical formula",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "sequence": {
-                                "type": "string",
-                                "description": "Peptide sequence in amino acid short format, e.g., Gly-Glu-Pro"
-                            },
-                            "iupac_name": {
-                                "type": "string",
-                                "description": "IUPAC name in peptide style, e.g., N-acetyl-L-leucyl-L-lysyl..."
-                            },
-                            "molecular_mass": {
-                                "type": "string",
-                                "description": "Molecular mass with units, e.g., 889.01 g/mol"
-                            },
-                            "chemical_formula": {
-                                "type": "string",
-                                "description": "Chemical formula in format like C38H68N10O14"
-                            }
-                        },
-                        "required": ["sequence", "iupac_name", "molecular_mass", "chemical_formula"]
-                    }
-                }
-            ]
-            
-            # Create the prompt for chemical information
-            prompt = f"Provide peptide details for {peptide_name} with sequence, IUPAC name, molecular mass, and chemical formula in the specified formats."
-            
-            # Try function calling first
+
+            name_hint = peptide_name or "the peptide"
+            system_prompt = (
+                "You are a strict binary relevance judge. "
+                "Given a user query and candidate content, respond with exactly one word: Yes or No. "
+                "Say Yes only if the content directly helps answer the query about the specified peptide/topic."
+            )
+            user_prompt = (
+                f"Query about {name_hint}: {user_query}\n\n"
+                f"Candidate Content:\n{candidate_content}\n\n"
+                "Answer with only one word: Yes or No"
+            )
+
             payload = {
-                "model": "gpt-4o-mini",
+                "model": "gpt-4o",
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are an expert in peptides and biochemistry."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
                 ],
-                "functions": functions,
-                "function_call": {"name": "get_peptide_info"},
-                "temperature": 0.1
+                "temperature": 0.0,
+                "max_tokens": 2
             }
-            
+
             response = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=60
+                timeout=20
             )
-            
             if response.status_code == 200:
                 data = response.json()
-                logger.info(f"OpenAI response: {data}")
-                
-                # Extract function call result
-                if "choices" in data and len(data["choices"]) > 0:
-                    choice = data["choices"][0]
-                    if "message" in choice and "function_call" in choice["message"]:
-                        function_call = choice["message"]["function_call"]
-                        logger.info(f"Function call received: {function_call}")
-                        if function_call["name"] == "get_peptide_info":
-                            import json
-                            args = json.loads(function_call["arguments"])
-                            logger.info(f"Function arguments: {args}")
-                            
-                            return PeptideChemicalInfo(
-                                peptide_name=peptide_name,
-                                sequence=args.get("sequence"),
-                                chemical_formula=args.get("chemical_formula"),
-                                molecular_mass=args.get("molecular_mass"),
-                                iupac_name=args.get("iupac_name")
-                            )
-                    elif "message" in choice and "content" in choice["message"]:
-                        # Fallback: try to parse regular response
-                        content = choice["message"]["content"]
-                        logger.info(f"Regular response content: {content}")
-                        
-                        # Try to extract information from the text response
-                        return self._parse_chemical_info_from_text(content, peptide_name)
-                
-                # Final fallback if function call didn't work
-                logger.warning("Function call not returned, using fallback response")
-                return PeptideChemicalInfo(
-                    peptide_name=peptide_name,
-                    sequence=None,
-                    chemical_formula=None,
-                    molecular_mass=None,
-                    iupac_name=None
-                )
+                text = ""
+                try:
+                    text = data["choices"][0]["message"]["content"].strip()
+                except Exception:
+                    pass
+                normalized = text.lower()
+                return normalized.startswith("yes")
             else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                raise Exception(f"Failed to get chemical information: {response.status_code}")
-                
+                logger.warning(f"LLM judge API error: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            logger.warning(f"Judge relevance failed: {str(e)}")
+            return False
+
+    def _tavily_fetch_content(self, query: str) -> tuple[List[str], float]:
+        """Fetch content snippets via Tavily search and return content + average score"""
+        try:
+            from app.core.config import settings
+            api_key = settings.TAVILY_API_KEY
+            if not api_key:
+                logger.warning("TAVILY_API_KEY not configured; returning empty content list")
+                return [], 0.0
+
+            try:
+                from tavily import TavilyClient
+            except Exception as e:
+                logger.warning(f"Tavily import failed: {str(e)}")
+                return [], 0.0
+
+            client = TavilyClient(api_key=api_key)
+            result = client.search(
+                query=query,
+                search_depth="advanced",
+                include_answer=True,
+                include_images=False,
+                max_results=5
+            )
+
+            contents: List[str] = []
+            scores = self._extract_tavily_scores(result)
+            average_score = sum(scores) / len(scores) if scores else 0.0
+            
+            if isinstance(result, dict) and "results" in result and isinstance(result["results"], list):
+                for item in result["results"]:
+                    if isinstance(item, dict) and "content" in item:
+                        contents.append(item["content"])
+            return contents, average_score
+        except Exception as e:
+            logger.warning(f"Tavily search failed: {str(e)}")
+            return [], 0.0
+
+    def _extract_tavily_scores(self, response: dict) -> List[float]:
+        """Extract scores from Tavily API response"""
+        scores = []
+        if "results" in response and isinstance(response["results"], list):
+            for item in response["results"]:
+                if isinstance(item, dict) and "score" in item:
+                    try:
+                        score = float(item["score"])
+                        scores.append(score)
+                    except (ValueError, TypeError):
+                        continue
+        return scores
+
+    def _generate_final_answer_from_content(self, user_query: str, contents: List[str], peptide_name_hint: str | None) -> str:
+        """Synthesize a final answer from external contents using LLM"""
+        try:
+            if not self.openai_api_key:
+                raise ValueError("OpenAI API key not configured")
+
+            headers = {
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json"
+            }
+
+            joined = "\n\n".join(contents[:5]) if contents else ""
+            name_hint = peptide_name_hint or "the peptide"
+            restrictions_text = self._get_chat_restrictions()
+            system_prompt = (
+                "You are a helpful assistant specializing in peptide research. "
+                "Use only the provided content to answer the user's question succinctly. "
+                "If insufficient, be honest."
+            ) + f"\n{restrictions_text}"
+
+            user_prompt = (
+                f"Context about {name_hint}:\n{joined}\n\n"
+                f"User Question: {user_query}\n"
+                "Answer in plain text, under 1000 characters."
+            )
+
+            payload = {
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 400
+            }
+
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=45
+            )
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    text = data["choices"][0]["message"]["content"].strip()
+                    return self._clean_llm_response(text)
+                except Exception:
+                    return "I could not synthesize an answer from the available content."
+            else:
+                logger.warning(f"Final answer generation error: {response.status_code} - {response.text}")
+                return "I could not generate an answer at this time."
+        except Exception as e:
+            logger.warning(f"Generate final answer failed: {str(e)}")
+            return "I could not generate an answer at this time."
+
+    def get_peptide_chemical_info(self, peptide_name: str) -> PeptideChemicalInfo:
+        """Get chemical information for a peptide using the per-field generator (no function calls)."""
+        try:
+            seq = self.generate_chemical_field(peptide_name, "sequence") or None
+            chem = self.generate_chemical_field(peptide_name, "chemical_formula") or None
+            mass = self.generate_chemical_field(peptide_name, "molecular_mass") or None
+            iupac = self.generate_chemical_field(peptide_name, "iupac_name") or None
+            return PeptideChemicalInfo(
+                peptide_name=peptide_name,
+                sequence=seq,
+                chemical_formula=chem,
+                molecular_mass=mass,
+                iupac_name=iupac
+            )
         except Exception as e:
             logger.error(f"Error getting chemical information for {peptide_name}: {str(e)}")
             raise
 
-    def _parse_chemical_info_from_text(self, content: str, peptide_name: str) -> PeptideChemicalInfo:
-        """Parse chemical information from text response as fallback"""
-        import re
-        
-        # Initialize with None values
-        sequence = None
-        chemical_formula = None
-        molecular_mass = None
-        iupac_name = None
-        
+    def generate_chemical_field(self, peptide_name: str, field: str) -> str | None:
+        """Generate exactly one requested chemical field using LLM only.
+
+        field ∈ {sequence, chemical_formula, molecular_mass, iupac_name}
+        Returns a plain string or None. The prompt enforces returning ONLY the requested field.
+        """
         try:
-            logger.info(f"Parsing content: {content}")
-            
-            # Try to extract sequence (look for patterns like single letter codes)
-            sequence_match = re.search(r'[A-Z]{10,}', content)
-            if sequence_match:
-                sequence = sequence_match.group()
-            
-            # Try to extract chemical formula (more flexible patterns)
-            # Look for C followed by numbers, then H, then more elements
-            formula_patterns = [
-                r'C\d+H\d+[A-Z]*\d*[A-Z]*\d*[A-Z]*\d*',  # C10H15N3O5S2
-                r'C\d+H\d+[A-Z]\d*[A-Z]*\d*',  # C10H15N3O5
-                r'C\d+H\d+[A-Z]\d+',  # C10H15N3
-                r'C\d+H\d+',  # C10H15
-            ]
-            
-            for pattern in formula_patterns:
-                formula_match = re.search(pattern, content)
-                if formula_match:
-                    chemical_formula = formula_match.group()
-                    break
-            
-            # Try to extract molecular mass (more flexible patterns)
-            mass_patterns = [
-                r'(\d+\.?\d*)\s*(?:Da|Daltons?|g/mol)',  # 1419.5 Da
-                r'(\d+\.?\d*)\s*(?:molecular mass|mass|weight)',  # 1419.5 molecular mass
-                r'mass[:\s]*(\d+\.?\d*)',  # mass: 1419.5
-                r'(\d+\.?\d*)\s*(?:amu|u)',  # 1419.5 amu
-                r'(\d+\.?\d*)\s*(?:g/mol)',  # 1419.5 g/mol
-            ]
-            
-            for pattern in mass_patterns:
-                mass_match = re.search(pattern, content, re.IGNORECASE)
-                if mass_match:
-                    try:
-                        molecular_mass = float(mass_match.group(1))
-                        break
-                    except ValueError:
-                        continue
-            
-            # Try to extract IUPAC name (more flexible patterns)
-            iupac_patterns = [
-                r'IUPAC[:\s]*([A-Z][a-z]+(?:[A-Z][a-z]+)*)',  # IUPAC: Some Chemical Name
-                r'name[:\s]*([A-Z][a-z]+(?:[A-Z][a-z]+)*)',  # name: Some Chemical Name
-                r'([A-Z][a-z]+(?:[A-Z][a-z]+){4,})',  # Very long chemical names (IUPAC names are typically long)
-                r'([A-Z][a-z]+(?:[A-Z][a-z]+){3,})',  # Long chemical names
-                r'([A-Z][a-z]+(?:[A-Z][a-z]+){2,})',  # Medium chemical names
-                # Look for systematic names with numbers and hyphens
-                r'([A-Z][a-z]+(?:[A-Z][a-z]+)*\d+(?:[A-Z][a-z]+)*)',  # Names with numbers
-                r'([A-Z][a-z]+(?:[A-Z][a-z]+)*-(?:[A-Z][a-z]+)*)',  # Names with hyphens
-            ]
-            
-            for pattern in iupac_patterns:
-                iupac_match = re.search(pattern, content)
-                if iupac_match and len(iupac_match.group(1)) > 15:
-                    iupac_name = iupac_match.group(1)
-                    break
-            
-            logger.info(f"Parsed from text - Sequence: {sequence}, Formula: {chemical_formula}, Mass: {molecular_mass}, IUPAC: {iupac_name}")
-            
+            if not self.openai_api_key:
+                raise ValueError("OpenAI API key not configured")
+
+            headers = {
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json"
+            }
+
+            rules = (
+                "You MUST return ONLY the value for the requested field in plain text."
+                " No labels, no extra words, no units unless the field requires it,"
+                " no punctuation beyond what is part of the value."
+            )
+
+            if field == "sequence":
+                requirement = (
+                    "Return ONLY the sequence for this entity."
+                )
+            elif field == "chemical_formula":
+                requirement = (
+                    "Return ONLY the chemical formula (e.g., C38H68N10O14)."
+                )
+            elif field == "molecular_mass":
+                requirement = (
+                    "Return ONLY the molecular mass with units 'g/mol' (e.g., 973.13 g/mol)."
+                    
+                )
+            elif field == "iupac_name":
+                requirement = (
+                    "Return ONLY the IUPAC or systematic name."
+                )
+            else:
+                raise ValueError("Unsupported field")
+
+            system_prompt = (
+                "You are a precise extractor for peptide chemical data. "
+                + rules
+            )
+            user_prompt = (
+                f"Peptide name: {peptide_name}\nRequested field: {field}\n"
+                f"Instruction: {requirement}"
+            )
+
+            payload = {
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.0,
+                "max_tokens": 120
+            }
+
+            # Log intent (debug level to avoid noise)
+            logger.debug(f"Generating chemical field: field='{field}', peptide='{peptide_name}'")
+
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    text = data["choices"][0]["message"]["content"].strip()
+                    if not text:
+                        logger.warning(
+                            f"OpenAI returned empty content for field='{field}', peptide='{peptide_name}'"
+                        )
+                    return text
+                except Exception as parse_err:
+                    logger.warning(
+                        f"Failed to parse OpenAI response for field='{field}', peptide='{peptide_name}': {parse_err}. Raw: {data}"
+                    )
+                    return ""
+            else:
+                try:
+                    body = response.text
+                except Exception:
+                    body = "<no-body>"
+                logger.error(
+                    f"OpenAI API error while generating field='{field}', peptide='{peptide_name}': "
+                    f"status={response.status_code}, body={body}"
+                )
+                return ""
         except Exception as e:
-            logger.warning(f"Error parsing chemical info from text: {str(e)}")
-        
-        return PeptideChemicalInfo(
-            peptide_name=peptide_name,
-            sequence=sequence,
-            chemical_formula=chemical_formula,
-            molecular_mass=molecular_mass,
-            iupac_name=iupac_name
-        )
+            logger.error(
+                f"Unhandled error generating chemical field '{field}' for '{peptide_name}': {str(e)}",
+                exc_info=True
+            )
+            return ""
+
+    # Note: No regex parsing/validation; we return only what the LLM provides or empty fields
 
     def find_similar_peptides(self, peptide_name: str, top_k: int = 4) -> List[Dict[str, Any]]:
         """Find similar peptides based on vector similarity"""
@@ -517,7 +718,8 @@ class PeptideService:
             logger.info(f"Finding similar peptides for: {peptide_name}")
             
             # First, get the target peptide to extract its embeddings
-            target_peptide = self.qdrant_service.get_peptide_by_name(peptide_name)
+            self._ensure_qdrant()
+            target_peptide = self.qdrant_service.get_peptide_by_name(peptide_name)  # type: ignore[attr-defined]
             
             if not target_peptide:
                 raise ValueError(f"Peptide '{peptide_name}' not found")
@@ -526,7 +728,7 @@ class PeptideService:
             target_embedding = target_peptide["vector"]
             
             # Search for similar peptides using the target's embeddings
-            similar_results = self.qdrant_service.search_peptides(target_embedding, limit=top_k + 1)  # +1 to exclude self
+            similar_results = self.qdrant_service.search_peptides(target_embedding, limit=top_k + 1)  # type: ignore[attr-defined]  # +1 to exclude self
             
             # Filter out the target peptide itself and format results
             similar_peptides = []
@@ -536,7 +738,7 @@ class PeptideService:
                     similar_peptides.append({
                         "name": result_name,
                         "overview": result["payload"]["overview"],
-                        "similarity_score": result["score"]
+                        "similarity_score": round(result["score"], 6)
                     })
                     
                     # Stop when we have enough results
@@ -549,3 +751,6 @@ class PeptideService:
         except Exception as e:
             logger.error(f"Error finding similar peptides: {str(e)}")
             raise
+
+
+

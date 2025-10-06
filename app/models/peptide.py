@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 
 class PeptideCreate(BaseModel):
@@ -41,4 +41,18 @@ class PeptideChemicalResponse(BaseModel):
     success: bool = True
     message: str = "Chemical information retrieved successfully"
     data: PeptideChemicalInfo
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ChemicalFieldRequest(BaseModel):
+    """Request to generate a single chemical field for a peptide via LLM only."""
+    peptide_name: str = Field(..., description="Peptide/common name to look up")
+    field: Literal["sequence", "chemical_formula", "molecular_mass", "iupac_name"] = Field(..., description="Which field to generate")
+
+
+class ChemicalFieldResponse(BaseModel):
+    """Response containing exactly one field value."""
+    success: bool = True
+    message: str = "Field generated successfully"
+    value: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

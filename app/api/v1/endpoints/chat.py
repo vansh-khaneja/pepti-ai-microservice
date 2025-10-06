@@ -2,13 +2,17 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.peptide_service import PeptideService
+from app.services.chat_session_service import ChatSessionService
+from app.services.intent_router_service import IntentRouterService
 from app.utils.helpers import logger, log_api_call
+from typing import Optional
 
 router = APIRouter()
 
 @router.post("/search", tags=["chat"])
 async def search_and_answer(
     query: str = Query(..., description="Your question about peptides"),
+    session_id: Optional[str] = Query(None, description="Optional session ID to continue conversation"),
     db: Session = Depends(get_db)
 ):
     """
@@ -23,11 +27,53 @@ async def search_and_answer(
         # Log the API call
         log_api_call("/chat/search", query)
         
-        # Initialize peptide service
-        peptide_service = PeptideService()
+        # Initialize minimal services first
+        session_service = ChatSessionService(db)
+        intent_service = IntentRouterService()
+
+        # Get or create session
+        session = session_service.get_or_create_session(session_id)
+
+        # Store user message (populate query field)
+        session_service.add_message(
+            session_id=session.session_id,
+            role="user",
+            query=query,
+            content=query
+        )
         
-        # Search and answer
-        result = peptide_service.search_and_answer(query)
+        # Intent classification and routing
+        classification = intent_service.classify_intent(query)
+        intent = classification.get("intent", "general")
+        result = None
+        if intent == "peptide":
+            # Create peptide service lazily only when needed
+            peptide_service = PeptideService()
+            result = peptide_service.search_and_answer(query)
+        else:
+            # General path: answer directly
+            answer = intent_service.answer_general_query(query)
+            result = {
+                "llm_response": answer,
+                "peptide_name": None,
+                "similarity_score": None,
+                "peptide_context": None,
+                "source": "general"
+            }
+        
+        # Store assistant response
+        session_service.add_message(
+            session_id=session.session_id,
+            role="assistant",
+            query=query,
+            response=result["llm_response"],
+            score=result.get("similarity_score"),
+            source=result.get("source"),
+            metadata={}
+        )
+        
+        # Add session info to response
+        result["session_id"] = session.session_id
         
         return {
             "success": True,
@@ -42,10 +88,83 @@ async def search_and_answer(
             detail=f"Failed to search and answer: {str(e)}"
         )
 
+@router.post("/router", tags=["chat"])
+async def route_and_answer(
+    query: str = Query(..., description="Your message"),
+    session_id: Optional[str] = Query(None, description="Optional session ID to continue conversation"),
+    db: Session = Depends(get_db)
+):
+    """
+    Classify query intent and route:
+    - general: answer directly via LLM (bypass peptide flow)
+    - peptide: run peptide search-and-answer flow
+    """
+    try:
+        log_api_call("/chat/router", query)
+
+        session_service = ChatSessionService(db)
+        intent_service = IntentRouterService()
+
+        session = session_service.get_or_create_session(session_id)
+
+        # Store user message
+        session_service.add_message(
+            session_id=session.session_id,
+            role="user",
+            query=query,
+            content=query
+        )
+
+        classification = intent_service.classify_intent(query)
+        intent = classification.get("intent", "general")
+        peptide_name = classification.get("peptide_name")
+
+        if intent == "peptide":
+            # If peptide_name not extracted, fall back to general search flow
+            peptide_service = PeptideService()
+            if peptide_name:
+                result = peptide_service.query_peptide(peptide_name, query)
+            else:
+                result = peptide_service.search_and_answer(query)
+
+            session_service.add_message(
+                session_id=session.session_id,
+                role="assistant",
+                query=query,
+                response=result["llm_response"],
+                score=result.get("similarity_score"),
+                source=result.get("source"),
+                metadata={}
+            )
+            result["intent"] = intent
+            result["session_id"] = session.session_id
+            return {"success": True, "message": "Peptide path", "data": result}
+
+        # General path
+        answer = intent_service.answer_general_query(query)
+        session_service.add_message(
+            session_id=session.session_id,
+            role="assistant",
+            query=query,
+            response=answer,
+            score=None,
+            source="general",
+            metadata={}
+        )
+        return {
+            "success": True,
+            "message": "General path",
+            "data": {"llm_response": answer, "intent": "general", "session_id": session.session_id}
+        }
+    except Exception as e:
+        logger.error(f"Error in route_and_answer: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to route query: {str(e)}")
+
 @router.post("/query/{peptide_name}", tags=["chat"])
 async def query_specific_peptide(
     peptide_name: str,
     query: str = Query(..., description="Your question about this specific peptide"),
+    session_id: Optional[str] = Query(None, description="Optional session ID to continue conversation"),
     db: Session = Depends(get_db)
 ):
     """
@@ -60,11 +179,52 @@ async def query_specific_peptide(
         # Log the API call
         log_api_call(f"/chat/query/{peptide_name}", query)
         
-        # Initialize peptide service
-        peptide_service = PeptideService()
+        # Initialize minimal services first
+        session_service = ChatSessionService(db)
+        intent_service = IntentRouterService()
         
-        # Query the specific peptide
-        result = peptide_service.query_peptide(peptide_name, query)
+        # Get or create session
+        session = session_service.get_or_create_session(session_id)
+        
+        # Store user message (populate query field)
+        session_service.add_message(
+            session_id=session.session_id,
+            role="user",
+            query=query,
+            content=query
+        )
+        
+        # Intent classification and routing for specific peptide queries
+        classification = intent_service.classify_intent(query)
+        intent = classification.get("intent", "peptide")
+        if intent == "general":
+            # General path: answer directly, bypass peptide context
+            answer = intent_service.answer_general_query(query)
+            result = {
+                "llm_response": answer,
+                "peptide_name": peptide_name,
+                "similarity_score": None,
+                "peptide_context": None,
+                "source": "general"
+            }
+        else:
+            # Peptide path
+            peptide_service = PeptideService()
+            result = peptide_service.query_peptide(peptide_name, query)
+        
+        # Store assistant response
+        session_service.add_message(
+            session_id=session.session_id,
+            role="assistant",
+            query=query,
+            response=result["llm_response"],
+            score=result.get("similarity_score"),
+            source=result.get("source"),
+            metadata={}
+        )
+        
+        # Add session info to response
+        result["session_id"] = session.session_id
         
         return {
             "success": True,
@@ -77,4 +237,99 @@ async def query_specific_peptide(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to query peptide: {str(e)}"
+        )
+
+@router.get("/sessions/{session_id}", tags=["chat"])
+async def get_session_history(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get chat session history with all messages
+    """
+    try:
+        session_service = ChatSessionService(db)
+        history = session_service.get_session_history(session_id)
+        
+        if not history:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {session_id} not found"
+            )
+        
+        return {
+            "success": True,
+            "message": "Session history retrieved successfully",
+            "data": history
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session history: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get session history: {str(e)}"
+        )
+
+@router.post("/sessions", tags=["chat"])
+async def create_new_session(
+    user_id: Optional[str] = Query(None, description="Optional user ID"),
+    title: Optional[str] = Query(None, description="Optional session title"),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new chat session
+    """
+    try:
+        session_service = ChatSessionService(db)
+        session = session_service.create_session(user_id=user_id, title=title)
+        
+        return {
+            "success": True,
+            "message": "New session created successfully",
+            "data": {
+                "session_id": session.session_id,
+                "title": session.title,
+                "created_at": session.created_at
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating session: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create session: {str(e)}"
+        )
+
+@router.delete("/sessions/{session_id}", tags=["chat"])
+async def delete_session(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a chat session and all its messages
+    """
+    try:
+        session_service = ChatSessionService(db)
+        success = session_service.delete_session(session_id)
+        
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {session_id} not found"
+            )
+        
+        return {
+            "success": True,
+            "message": f"Session {session_id} deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting session: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete session: {str(e)}"
         )

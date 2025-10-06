@@ -35,23 +35,29 @@ class AdminDashboardService:
             results = await asyncio.gather(
                 self._get_chat_restrictions(db),
                 self._get_allowed_urls(db),
-                self._get_daily_analytics(db),
-                self._get_weekly_analytics(db),
-                self._get_monthly_analytics(db),
+                self._get_external_daily(db),
+                self._get_external_weekly(db),
+                self._get_external_api_summary(db),
                 return_exceptions=True
             )
             
             # Process results
             chat_restrictions = results[0] if not isinstance(results[0], Exception) else []
             allowed_urls = results[1] if not isinstance(results[1], Exception) else []
-            daily_analytics = results[2] if not isinstance(results[2], Exception) else []
-            weekly_analytics = results[3] if not isinstance(results[3], Exception) else []
-            monthly_analytics = results[4] if not isinstance(results[4], Exception) else []
+            external_daily = results[2] if not isinstance(results[2], Exception) else []
+            external_weekly = results[3] if not isinstance(results[3], Exception) else []
+            external_api_summary = results[4] if not isinstance(results[4], Exception) else []
             
             # Log any errors that occurred
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    error_names = ["chat_restrictions", "allowed_urls", "daily_analytics", "weekly_analytics", "monthly_analytics"]
+                    error_names = [
+                        "chat_restrictions",
+                        "allowed_urls",
+                        "external_daily",
+                        "external_weekly",
+                        "external_api_summary"
+                    ]
                     logger.error(f"❌ Error fetching {error_names[i]}: {str(result)}")
             
             duration = asyncio.get_event_loop().time() - start_time
@@ -60,9 +66,9 @@ class AdminDashboardService:
             return {
                 "chat_restrictions": chat_restrictions,
                 "allowed_urls": allowed_urls,
-                "daily_analytics": daily_analytics,
-                "weekly_analytics": weekly_analytics,
-                "monthly_analytics": monthly_analytics,
+                "external_daily": external_daily,
+                "external_weekly": external_weekly,
+                "external_api_summary": external_api_summary,
                 "metadata": {
                     "fetch_time": duration,
                     "timestamp": asyncio.get_event_loop().time()
@@ -122,3 +128,31 @@ class AdminDashboardService:
         except Exception as e:
             logger.error(f"Error fetching monthly analytics: {e}")
             return []
+
+    async def _get_external_api_summary(self, db: Session) -> List[Dict[str, Any]]:
+        """Get external API usage summary (last 24 hours)"""
+        try:
+            analytics_service = AnalyticsService(db)
+            summaries = analytics_service.summarize_external_usage(since_hours=24)
+            return [s.model_dump() for s in summaries]
+        except Exception as e:
+            logger.error(f"Error fetching external API summary: {e}")
+            return []
+
+    async def _get_external_daily(self, db: Session) -> List[Dict[str, Any]]:
+        try:
+            analytics_service = AnalyticsService(db)
+            return analytics_service.get_external_daily_usage(db, days=7)
+        except Exception as e:
+            logger.error(f"Error fetching external daily usage: {e}")
+            return []
+
+    async def _get_external_weekly(self, db: Session) -> List[Dict[str, Any]]:
+        try:
+            analytics_service = AnalyticsService(db)
+            return analytics_service.get_external_weekly_usage(db, weeks=4)
+        except Exception as e:
+            logger.error(f"Error fetching external weekly usage: {e}")
+            return []
+
+    # Monthly external analytics intentionally removed per requirements

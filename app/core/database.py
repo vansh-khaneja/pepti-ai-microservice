@@ -44,7 +44,7 @@ def init_db():
             print("Database tables created successfully")
         else:
             # Check if our specific tables exist
-            required_tables = ['allowed_urls', 'chat_restrictions', 'endpoint_usage']
+            required_tables = ['allowed_urls', 'chat_restrictions', 'endpoint_usage', 'external_api_usage', 'chat_sessions', 'chat_messages', 'peptide_info_sessions', 'peptide_info_messages']
             missing_tables = [table for table in required_tables if table not in existing_tables]
             
             if missing_tables:

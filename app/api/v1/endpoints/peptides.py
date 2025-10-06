@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from app.services.peptide_service import PeptideService
 from app.core.database import get_db
-from app.models.peptide import PeptideCreate, PeptideResponse, PeptideChemicalResponse
+from app.models.peptide import PeptideCreate, PeptideResponse, PeptideChemicalResponse, ChemicalFieldRequest, ChemicalFieldResponse
 from app.utils.helpers import log_api_call
 from typing import List, Dict, Any
 
@@ -50,6 +50,43 @@ async def create_peptide(
         )
 
 
+
+@router.put("/{peptide_name}", response_model=PeptideResponse, tags=["peptides"])
+async def update_peptide(
+    peptide_name: str,
+    peptide_data: PeptideCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a peptide by name
+
+    This endpoint deletes the existing peptide entry identified by `peptide_name`
+    from the Qdrant vector database and creates a new one from `peptide_data`.
+    """
+    try:
+        # Log the API call
+        log_api_call(f"/peptides/{peptide_name}", "PUT")
+
+        # Initialize peptide service
+        peptide_service = PeptideService()
+
+        # Update (delete+create) the peptide
+        result = peptide_service.update_peptide(peptide_name, peptide_data)
+
+        return PeptideResponse(
+            success=True,
+            message="Peptide updated successfully",
+            data=result
+        )
+    except Exception as e:
+        # Log the error
+        log_api_call(f"/peptides/{peptide_name}", "PUT", error=str(e))
+
+        # Return error response
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update peptide: {str(e)}"
+        )
 
 @router.delete("/{peptide_name}", tags=["peptides"])
 async def delete_peptide(
@@ -110,10 +147,12 @@ async def ensure_index(
         # Log the API call
         log_api_call("/peptides/ensure-index", "POST")
         
-        # Initialize peptide service
+        # Initialize peptide service and ensure Qdrant is ready
         peptide_service = PeptideService()
-        
-        # Ensure the index exists
+        # Lazily create qdrant service if needed, then ensure index explicitly
+        peptide_service._ensure_qdrant()
+        if peptide_service.qdrant_service is None:
+            raise RuntimeError("Qdrant service failed to initialize")
         peptide_service.qdrant_service.ensure_name_index()
         
         # Return the response
@@ -214,7 +253,7 @@ async def get_peptide_chemical_info(
             message=f"Chemical information retrieved successfully for {peptide_name}",
             data=chemical_info
         )
-        
+
     except Exception as e:
         # Log the error
         log_api_call(f"/peptides/{peptide_name}/chemical-info", "GET", error=str(e))
@@ -224,3 +263,28 @@ async def get_peptide_chemical_info(
             status_code=500, 
             detail=f"Failed to get chemical information for {peptide_name}: {str(e)}"
         )
+
+@router.post("/chemical-field", response_model=ChemicalFieldResponse, tags=["peptides"])
+async def generate_chemical_field(
+    body: ChemicalFieldRequest
+):
+    """
+    Generate exactly one requested chemical field via OpenAI only.
+    Fields: sequence | chemical_formula | molecular_mass | iupac_name
+    """
+    try:
+        # Log the API call
+        log_api_call("/peptides/chemical-field", "POST")
+
+        peptide_service = PeptideService()
+        value = peptide_service.generate_chemical_field(body.peptide_name, body.field)
+
+        return ChemicalFieldResponse(
+            success=True,
+            message="Field generated successfully",
+            value=value or ""
+        )
+    except Exception as e:
+        log_api_call("/peptides/chemical-field", "POST", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to generate field: {str(e)}")
+

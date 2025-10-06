@@ -30,9 +30,11 @@ class Settings(BaseSettings):
     # API Keys
     SERP_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
+    TAVILY_API_KEY: str = ""
     
     # Search settings
     CONFIDENCE_SCORE: int = 70  # Minimum confidence score for chunk relevance (0-100)
+    MIN_VECTOR_SIMILARITY: float = 0.35  # If below, trigger LLM-judge path
     
     class Config:
         env_file = ".env"

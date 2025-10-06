@@ -51,3 +51,38 @@ class EndpointUsageResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ExternalApiUsage(Base):
+    """Model to track external API usage (QDRANT, OPENAI, SERPAPI, TAVILY)"""
+    __tablename__ = "external_api_usage"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(50), nullable=False, index=True)  # qdrant|openai|serpapi|tavily
+    operation = Column(String(100), nullable=True)  # e.g., search_peptides, embeddings.create, search, chat.completions
+    status_code = Column(Integer, nullable=True)
+    success = Column(Integer, nullable=False, default=1)  # 1 true, 0 false
+    latency_ms = Column(Integer, nullable=True)
+    request_bytes = Column(Integer, nullable=True)
+    response_bytes = Column(Integer, nullable=True)
+    meta = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ExternalApiUsageCreate(BaseModel):
+    provider: str
+    operation: Optional[str] = None
+    status_code: Optional[int] = None
+    success: bool = True
+    latency_ms: Optional[int] = None
+    request_bytes: Optional[int] = None
+    response_bytes: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ExternalApiUsageSummary(BaseModel):
+    provider: str
+    total_calls: int
+    successes: int
+    failures: int
+    avg_latency_ms: Optional[float] = None

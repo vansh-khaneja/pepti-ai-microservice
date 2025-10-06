@@ -3,12 +3,13 @@ from bs4 import BeautifulSoup
 from serpapi import GoogleSearch
 import tiktoken
 import json
+import numpy as np
 from typing import List, Dict, Any
 import logging
 from sqlalchemy.orm import Session
 from app.models.search import SearchRequest, SearchResult, ContentChunk, SearchResponse
 from app.core.config import settings
-from app.utils.helpers import logger
+from app.utils.helpers import logger, ExternalApiTimer
 from datetime import datetime
 
 class SearchService:
@@ -18,6 +19,66 @@ class SearchService:
         self.chunk_size = 1000  # characters per chunk
         self.chunk_overlap = 200  # overlap between chunks
         self.max_chunks_per_site = 5  # maximum chunks per website
+    
+    def _generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding using OpenAI API"""
+        try:
+            if not self.openai_api_key:
+                raise ValueError("OpenAI API key not configured")
+            
+            headers = {
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "input": text,
+                "model": "text-embedding-3-large"
+            }
+            
+            with ExternalApiTimer("openai", operation="embeddings.create") as t:
+                response = requests.post(
+                    "https://api.openai.com/v1/embeddings",
+                    headers=headers,
+                    json=payload,
+                    timeout=30
+                )
+                t.set_status(status_code=response.status_code, success=(response.status_code == 200))
+            
+            if response.status_code == 200:
+                data = response.json()
+                embedding = data["data"][0]["embedding"]
+                logger.info(f"Generated embedding for text length {len(text)}, dimensions: {len(embedding)}")
+                return embedding
+            else:
+                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+                raise Exception(f"Failed to generate embedding: {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"Error generating embedding: {str(e)}")
+            raise
+    
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors"""
+        try:
+            # Convert to numpy arrays
+            a = np.array(vec1)
+            b = np.array(vec2)
+            
+            # Calculate cosine similarity
+            dot_product = np.dot(a, b)
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+            
+            similarity = dot_product / (norm_a * norm_b)
+            return float(similarity)
+            
+        except Exception as e:
+            logger.error(f"Error calculating cosine similarity: {str(e)}")
+            return 0.0
 
     def search_peptide(self, search_request: SearchRequest, db: Session) -> SearchResponse:
         """Main method to perform complete peptide search"""
@@ -66,8 +127,8 @@ class SearchService:
             generated_response = self._generate_llm_response(relevant_chunks, search_request)
             logger.info("Generated LLM response successfully")
             
-            # Step 6: Create final response with similarity scores for source sites
-            source_sites = self._calculate_source_similarity_scores(scraped_content, search_request)
+            # Step 6: Create final response with chunk-based similarity scores for source sites
+            source_sites = self._calculate_chunk_similarity_scores(relevant_chunks, search_request)
             
             return SearchResponse(
                 peptide_name=search_request.peptide_name,
@@ -86,13 +147,15 @@ class SearchService:
         try:
             query = f"{search_request.peptide_name} {search_request.requirements}"
             
-            search = GoogleSearch({
+            payload = {
                 "q": query,
                 "api_key": self.serp_api_key,
                 "num": 50  # Get top 50 results to find more allowed URLs
-            })
-            
-            results = search.get_dict()
+            }
+            with ExternalApiTimer("serpapi", operation="search", metadata={"q": query}) as t:
+                search = GoogleSearch(payload)
+                results = search.get_dict()
+                t.set_status(status_code=200, success=True)
             organic_results = results.get("organic_results", [])
             
             search_results = []
@@ -230,6 +293,7 @@ class SearchService:
         for item in scraped_content:
             content = item["content"]
             url = item["url"]
+            title = item["title"]
             
             # Split content into chunks
             content_chunks = self._split_text_into_chunks(content)
@@ -241,6 +305,7 @@ class SearchService:
                 chunks.append(ContentChunk(
                     content=chunk,
                     source_url=url,
+                    title=title,
                     chunk_index=i,
                     relevance_score=None
                 ))
@@ -267,24 +332,28 @@ class SearchService:
         return chunks
 
     def _find_relevant_chunks(self, chunks: List[ContentChunk], search_request: SearchRequest) -> List[ContentChunk]:
-        """Find most relevant chunks using similarity search with confidence score filtering"""
+        """Find most relevant chunks using cosine similarity with confidence score filtering"""
         try:
             from app.core.config import settings
             
-            # Simple keyword-based relevance scoring
-            query_terms = f"{search_request.peptide_name} {search_request.requirements}".lower().split()
+            # Generate embedding for the search query
+            query_text = f"{search_request.peptide_name} {search_request.requirements}"
+            query_embedding = self._generate_embedding(query_text)
+            
             min_confidence = settings.CONFIDENCE_SCORE
             
             scored_chunks = []
             for chunk in chunks:
-                chunk_lower = chunk.content.lower()
-                score = sum(1 for term in query_terms if term in chunk_lower)
+                # Generate embedding for the chunk content
+                chunk_embedding = self._generate_embedding(chunk.content)
                 
-                # Calculate confidence score as percentage (0-100)
-                max_possible_score = len(query_terms)
-                confidence_score = (score / max_possible_score * 100) if max_possible_score > 0 else 0
+                # Calculate cosine similarity
+                similarity_score = self._cosine_similarity(query_embedding, chunk_embedding)
                 
-                chunk.relevance_score = score
+                # Convert similarity score to confidence percentage (0-100)
+                confidence_score = similarity_score * 100
+                
+                chunk.relevance_score = similarity_score
                 chunk.confidence_score = confidence_score
                 scored_chunks.append(chunk)
             
@@ -360,12 +429,14 @@ class SearchService:
                 "max_output_tokens": 600  # Reduced to ensure under 1000 characters
             }
             
-            response = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=payload,
-                timeout=45
-            )
+            with ExternalApiTimer("openai", operation="responses.create") as t:
+                response = requests.post(
+                    "https://api.openai.com/v1/responses",
+                    headers=headers,
+                    json=payload,
+                    timeout=45
+                )
+                t.set_status(status_code=response.status_code, success=(response.status_code == 200))
             
             if response.status_code == 200:
                 data = response.json()
@@ -424,35 +495,61 @@ class SearchService:
         
         return cleaned
 
-    def _calculate_source_similarity_scores(self, scraped_content: List[Dict[str, Any]], search_request: SearchRequest) -> List[Dict[str, Any]]:
-        """Calculate similarity scores for each source site"""
-        source_sites = []
-        query_terms = f"{search_request.peptide_name} {search_request.requirements}".lower().split()
+    def _calculate_chunk_similarity_scores(self, chunks: List[ContentChunk], search_request: SearchRequest) -> List[Dict[str, Any]]:
+        """Calculate similarity scores for each chunk using cosine similarity and group by parent URL"""
+        # Generate embedding for the search query
+        query_text = f"{search_request.peptide_name} {search_request.requirements}"
+        query_embedding = self._generate_embedding(query_text)
         
-        for item in scraped_content:
-            content = item["content"].lower()
-            title = item["title"].lower()
+        # Calculate similarity for each chunk
+        chunk_scores = []
+        for chunk in chunks:
+            # Generate embedding for the chunk content
+            chunk_embedding = self._generate_embedding(chunk.content)
             
-            # Calculate similarity score based on keyword matches
-            content_score = sum(1 for term in query_terms if term in content)
-            title_score = sum(1 for term in query_terms if term in title)
+            # Calculate cosine similarity
+            similarity_score = self._cosine_similarity(query_embedding, chunk_embedding)
             
-            # Weight title matches more heavily
-            total_score = (content_score * 0.7) + (title_score * 0.3)
+            # Debug logging
+            logger.info(f"Chunk similarity: URL={chunk.source_url}, Title={chunk.title}, Score={similarity_score:.6f}")
             
-            # Normalize score (0-1 range)
-            max_possible_score = len(query_terms) * 0.7 + len(query_terms) * 0.3
-            similarity_score = min(total_score / max_possible_score, 1.0) if max_possible_score > 0 else 0.0
-            
-            source_sites.append({
-                "title": item["title"],
-                "url": item["url"],
-                "similarity_score": round(similarity_score, 3),
-                "content_length": len(item["content"])
+            chunk_scores.append({
+                "chunk": chunk,
+                "similarity_score": similarity_score
             })
         
-        # Sort by similarity score (highest first)
-        source_sites.sort(key=lambda x: x["similarity_score"], reverse=True)
+        # Sort chunks by similarity score (highest first)
+        chunk_scores.sort(key=lambda x: x["similarity_score"], reverse=True)
         
-        logger.info(f"Calculated similarity scores for {len(source_sites)} sources")
+        # Group chunks by their parent URL and calculate best similarity per URL
+        url_scores = {}
+        for chunk_data in chunk_scores:
+            chunk = chunk_data["chunk"]
+            similarity_score = chunk_data["similarity_score"]
+            
+            if chunk.source_url not in url_scores:
+                url_scores[chunk.source_url] = {
+                    "url": chunk.source_url,
+                    "title": chunk.title,  # Use title from chunk
+                    "best_similarity_score": similarity_score,
+                    "total_chunks": 1,
+                    "content_length": len(chunk.content)
+                }
+            else:
+                # Update with best similarity score for this URL
+                if similarity_score > url_scores[chunk.source_url]["best_similarity_score"]:
+                    url_scores[chunk.source_url]["best_similarity_score"] = similarity_score
+                url_scores[chunk.source_url]["total_chunks"] += 1
+                url_scores[chunk.source_url]["content_length"] += len(chunk.content)
+        
+        # Convert to list and sort by best similarity score
+        source_sites = list(url_scores.values())
+        source_sites.sort(key=lambda x: x["best_similarity_score"], reverse=True)
+        
+        # Round similarity scores to 6 decimal places
+        for site in source_sites:
+            site["similarity_score"] = round(site["best_similarity_score"], 6)
+            del site["best_similarity_score"]  # Remove the temporary key
+        
+        logger.info(f"Calculated chunk-based similarity scores for {len(source_sites)} sources")
         return source_sites

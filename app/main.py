@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import init_db, close_db
-from app.middleware.analytics_middleware import AnalyticsMiddleware
+# from app.middleware.analytics_middleware import AnalyticsMiddleware
 from app.utils.helpers import logger
 
 app = FastAPI(
@@ -22,8 +22,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Analytics middleware
-app.add_middleware(AnalyticsMiddleware)
+# Analytics middleware (disabled per request)
+# app.add_middleware(AnalyticsMiddleware)
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -42,6 +42,12 @@ async def health_check():
 async def startup_event():
     """Initialize database on startup"""
     try:
+        # Import models to ensure they're registered with SQLAlchemy
+        from app.models import (
+            ChatSession, ChatMessage,
+            PeptideInfoSession, PeptideInfoMessage,
+            ExternalApiUsage
+        )
         init_db()
         logger.info("Database initialized successfully")
     except Exception as e:
