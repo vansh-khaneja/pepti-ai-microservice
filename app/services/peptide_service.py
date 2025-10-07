@@ -316,7 +316,8 @@ class PeptideService:
         """Delete a peptide by name"""
         try:
             logger.info(f"Deleting peptide: {peptide_name}")
-            
+            # Ensure Qdrant client is initialized before deletion
+            self._ensure_qdrant()
             success = self.qdrant_service.delete_peptide(peptide_name)
             
             if success:

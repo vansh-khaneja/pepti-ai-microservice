@@ -24,7 +24,7 @@ async def get_daily_endpoint_usage(
         log_api_call("/analytics/daily", f"days={days}")
         
         analytics_service = AnalyticsService(db)
-        daily_usage = analytics_service.get_daily_endpoint_usage(days=days)
+        daily_usage = analytics_service.get_daily_endpoint_usage(db, days=days)
         
         return {
             "success": True,
@@ -56,7 +56,7 @@ async def get_weekly_endpoint_usage(
         log_api_call("/analytics/weekly", f"weeks={weeks}")
         
         analytics_service = AnalyticsService(db)
-        weekly_usage = analytics_service.get_weekly_endpoint_usage(weeks=weeks)
+        weekly_usage = analytics_service.get_weekly_endpoint_usage(db, weeks=weeks)
         
         return {
             "success": True,
@@ -88,7 +88,7 @@ async def get_monthly_overall_usage(
         log_api_call("/analytics/monthly", f"months={months}")
         
         analytics_service = AnalyticsService(db)
-        monthly_usage = analytics_service.get_monthly_overall_usage(months=months)
+        monthly_usage = analytics_service.get_monthly_endpoint_usage(db, months=months)
         
         return {
             "success": True,
