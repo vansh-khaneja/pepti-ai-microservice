@@ -668,7 +668,7 @@ class PeptideService:
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.0,
-                "max_tokens": 120
+                "max_completion_tokens": 120
             }
 
             # Log intent (debug level to avoid noise)
