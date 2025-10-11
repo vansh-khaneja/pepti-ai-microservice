@@ -662,7 +662,7 @@ class PeptideService:
             )
 
             payload = {
-                "model": "gpt-4o",
+                "model": "gpt-5-2025-08-07",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
