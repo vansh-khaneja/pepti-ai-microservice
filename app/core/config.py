@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     TAVILY_API_KEY: str = ""
     
+    # Redis settings
+    REDIS_URL: str = "redis://localhost:6379"  # Can be overridden with REDIS_URL env var
+    REDIS_DB: int = 0  # Can be overridden with REDIS_DB env var
+    CACHE_TTL: int = 3600  # Cache TTL in seconds (1 hour), can be overridden with CACHE_TTL env var
+    
     # Search settings
     CONFIDENCE_SCORE: int = 70  # Minimum confidence score for chunk relevance (0-100)
     MIN_VECTOR_SIMILARITY: float = 0.35  # If below, trigger LLM-judge path

@@ -4,8 +4,10 @@ from app.core.database import get_db
 from app.services.peptide_service import PeptideService
 from app.services.chat_session_service import ChatSessionService
 from app.services.intent_router_service import IntentRouterService
+from app.services.redis_cache_service import RedisCacheService
 from app.utils.helpers import logger, log_api_call
 from typing import Optional
+from datetime import datetime
 
 router = APIRouter()
 
@@ -19,28 +21,60 @@ async def search_and_answer(
     General search endpoint that finds the best matching peptide and answers your question
     
     This endpoint:
-    1. Uses vector similarity to find the best matching peptide
-    2. Answers your question using that peptide's context
-    3. Returns the answer, peptide name, and similarity score
+    1. Checks Redis cache first for existing answers
+    2. Uses vector similarity to find the best matching peptide
+    3. Answers your question using that peptide's context
+    4. Caches the result for future queries
+    5. Returns the answer, peptide name, and similarity score
     """
     try:
         # Log the API call
         log_api_call("/chat/search", query)
         
-        # Initialize minimal services first
+        # Initialize Redis cache service
+        cache_service = RedisCacheService()
+        
+        # Initialize services first (needed for both cache hit and miss)
         session_service = ChatSessionService(db)
         intent_service = IntentRouterService()
 
         # Get or create session
         session = session_service.get_or_create_session(session_id)
 
-        # Store user message (populate query field)
+        # Always store user message (populate query field)
         session_service.add_message(
             session_id=session.session_id,
             role="user",
             query=query,
             content=query
         )
+        
+        # Check cache first
+        cached_response = cache_service.get_cached_response(query, endpoint_type="general")
+        if cached_response:
+            logger.info(f"Returning cached response for query: {query[:50]}...")
+            
+            # Store assistant response from cache
+            session_service.add_message(
+                session_id=session.session_id,
+                role="assistant",
+                query=query,
+                response=cached_response["response"]["llm_response"],
+                score=cached_response["response"].get("similarity_score"),
+                source=cached_response["response"].get("source"),
+                metadata={"cached": True}
+            )
+            
+            # Add session info to cached response
+            result = cached_response["response"].copy()
+            result["session_id"] = session.session_id
+            
+            return {
+                "success": True,
+                "message": "Search completed successfully (from cache)",
+                "data": result,
+                "cached": True
+            }
         
         # Intent classification and routing
         classification = intent_service.classify_intent(query)
@@ -72,13 +106,18 @@ async def search_and_answer(
             metadata={}
         )
         
-        # Add session info to response
+        # Add session info and timestamp to response
         result["session_id"] = session.session_id
+        result["timestamp"] = datetime.utcnow().isoformat()
+        
+        # Cache the response
+        cache_service.set_cached_response(query, result, endpoint_type="general")
         
         return {
             "success": True,
             "message": "Search completed successfully",
-            "data": result
+            "data": result,
+            "cached": False
         }
         
     except Exception as e:
@@ -171,28 +210,60 @@ async def query_specific_peptide(
     Query a specific peptide by name
     
     This endpoint:
-    1. Finds the peptide by name in Qdrant
-    2. Uses its context to answer your question
-    3. Returns the answer based on that peptide's information
+    1. Checks Redis cache first for existing answers
+    2. Finds the peptide by name in Qdrant
+    3. Uses its context to answer your question
+    4. Caches the result for future queries
+    5. Returns the answer based on that peptide's information
     """
     try:
         # Log the API call
         log_api_call(f"/chat/query/{peptide_name}", query)
         
-        # Initialize minimal services first
+        # Initialize Redis cache service
+        cache_service = RedisCacheService()
+        
+        # Initialize services first (needed for both cache hit and miss)
         session_service = ChatSessionService(db)
         intent_service = IntentRouterService()
         
         # Get or create session
         session = session_service.get_or_create_session(session_id)
         
-        # Store user message (populate query field)
+        # Always store user message (populate query field)
         session_service.add_message(
             session_id=session.session_id,
             role="user",
             query=query,
             content=query
         )
+        
+        # Check cache first
+        cached_response = cache_service.get_cached_response(query, peptide_name, endpoint_type="specific")
+        if cached_response:
+            logger.info(f"Returning cached response for peptide query: {peptide_name} - {query[:50]}...")
+            
+            # Store assistant response from cache
+            session_service.add_message(
+                session_id=session.session_id,
+                role="assistant",
+                query=query,
+                response=cached_response["response"]["llm_response"],
+                score=cached_response["response"].get("similarity_score"),
+                source=cached_response["response"].get("source"),
+                metadata={"cached": True, "peptide_name": peptide_name}
+            )
+            
+            # Add session info to cached response
+            result = cached_response["response"].copy()
+            result["session_id"] = session.session_id
+            
+            return {
+                "success": True,
+                "message": f"Query for {peptide_name} completed successfully (from cache)",
+                "data": result,
+                "cached": True
+            }
         
         # Intent classification and routing for specific peptide queries
         classification = intent_service.classify_intent(query)
@@ -223,13 +294,18 @@ async def query_specific_peptide(
             metadata={}
         )
         
-        # Add session info to response
+        # Add session info and timestamp to response
         result["session_id"] = session.session_id
+        result["timestamp"] = datetime.utcnow().isoformat()
+        
+        # Cache the response
+        cache_service.set_cached_response(query, result, peptide_name, endpoint_type="specific")
         
         return {
             "success": True,
             "message": f"Query for {peptide_name} completed successfully",
-            "data": result
+            "data": result,
+            "cached": False
         }
         
     except Exception as e:
@@ -332,4 +408,48 @@ async def delete_session(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete session: {str(e)}"
+        )
+
+@router.get("/cache/stats", tags=["chat"])
+async def get_cache_stats():
+    """
+    Get Redis cache statistics and information
+    """
+    try:
+        cache_service = RedisCacheService()
+        stats = cache_service.get_cache_stats()
+        
+        return {
+            "success": True,
+            "message": "Cache statistics retrieved successfully",
+            "data": stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get cache stats: {str(e)}"
+        )
+
+@router.delete("/cache/clear", tags=["chat"])
+async def clear_cache():
+    """
+    Clear all chat cache entries
+    """
+    try:
+        cache_service = RedisCacheService()
+        deleted_count = cache_service.invalidate_cache()
+        
+        return {
+            "success": True,
+            "message": f"Cache cleared successfully. {deleted_count} entries deleted.",
+            "data": {"deleted_count": deleted_count}
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to clear cache: {str(e)}"
         )

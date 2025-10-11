@@ -12,3 +12,4 @@ tiktoken==0.5.1
 qdrant-client==1.7.0
 tabulate==0.9.0
 tavily-python==0.3.7
+redis==5.0.1
