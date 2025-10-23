@@ -27,22 +27,25 @@ class RepositoryManager:
         """Initialize the repository manager."""
         if not hasattr(self, '_initialized'):
             self._initialized = True
-            self._initialize_repositories()
+            # Don't initialize repositories immediately - use lazy initialization
     
     def _initialize_repositories(self):
-        """Initialize all repositories."""
+        """Initialize all repositories lazily."""
         try:
             # Initialize vector store repository
-            self._vector_store_repo = VectorStoreRepository()
-            logger.info("Vector store repository initialized successfully")
+            if self._vector_store_repo is None:
+                self._vector_store_repo = VectorStoreRepository()
+                logger.info("Vector store repository initialized successfully")
             
             # Initialize relational repository
-            self._relational_repo = RelationalRepository()
-            logger.info("Relational repository initialized successfully")
+            if self._relational_repo is None:
+                self._relational_repo = RelationalRepository()
+                logger.info("Relational repository initialized successfully")
             
             # Initialize cache repository
-            self._cache_repo = CacheRepository()
-            logger.info("Cache repository initialized successfully")
+            if self._cache_repo is None:
+                self._cache_repo = CacheRepository()
+                logger.info("Cache repository initialized successfully")
             
         except Exception as e:
             logger.error(f"Failed to initialize repositories: {str(e)}")
@@ -52,6 +55,8 @@ class RepositoryManager:
     def vector_store(self) -> VectorStoreRepository:
         """Get vector store repository instance."""
         if self._vector_store_repo is None:
+            self._initialize_repositories()
+        if self._vector_store_repo is None:
             raise ValueError("Vector store repository not initialized")
         return self._vector_store_repo
     
@@ -59,12 +64,16 @@ class RepositoryManager:
     def relational(self) -> RelationalRepository:
         """Get relational repository instance."""
         if self._relational_repo is None:
+            self._initialize_repositories()
+        if self._relational_repo is None:
             raise ValueError("Relational repository not initialized")
         return self._relational_repo
     
     @property
     def cache(self) -> CacheRepository:
         """Get cache repository instance."""
+        if self._cache_repo is None:
+            self._initialize_repositories()
         if self._cache_repo is None:
             raise ValueError("Cache repository not initialized")
         return self._cache_repo
