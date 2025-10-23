@@ -42,6 +42,10 @@ async def health_check():
 async def startup_event():
     """Initialize database on startup"""
     try:
+        # Set server start time
+        from app.core.server_info import set_server_start_time
+        set_server_start_time()
+        
         # Import models to ensure they're registered with SQLAlchemy
         from app.models import (
             ChatSession, ChatMessage,

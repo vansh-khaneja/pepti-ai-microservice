@@ -1,442 +1,532 @@
 # Pepti Wiki AI
 
-An AI-powered peptide information and search API that combines vector search with large language models to provide intelligent answers about peptides.
+An intelligent AI-powered peptide information and search API built with FastAPI, featuring vector similarity search, web integration, and comprehensive cost tracking.
 
-## Features
+## 🚀 Features
 
-- **Peptide Management**: Store and manage peptide information (name, overview, mechanism of actions, potential research fields)
-- **Vector Search**: Semantic search using Qdrant vector database
-- **AI-Powered Queries**: Get intelligent answers about specific peptides using OpenAI GPT models
-- **General Search**: Find relevant peptides and get AI-generated answers based on similarity
-- **Web Search & Scraping**: Search the web for peptide information using SerpAPI and intelligent content processing
-- **Recommendations**: Find similar peptides based on vector similarity
-- **Analytics**: Track API endpoint usage with comprehensive analytics
-- **Chat Restrictions**: Enforce LLM behavior rules and content restrictions
-- **URL Management**: Control which URLs can be accessed during web searches
+- **AI-Powered Chat**: Intelligent peptide chatbot with context-aware responses
+- **Vector Search**: Advanced peptide discovery using Qdrant vector database
+- **Web Integration**: Real-time web search with SerpAPI and Tavily
+- **Cost Tracking**: Comprehensive analytics and cost monitoring
+- **Database Migrations**: Modern Alembic-based migration system
+- **Redis Caching**: High-performance caching for improved response times
+- **Admin Dashboard**: Complete analytics and management interface
 
-## Tech Stack
+## 🏗️ Architecture
 
-- **Backend**: FastAPI (Python)
-- **Database**: PostgreSQL (external hosted - Neon, Supabase, Railway, etc.)
-- **Vector Database**: Qdrant Cloud
-- **AI Models**: OpenAI GPT-4o-mini, text-embedding-3-small
-- **Web Search**: SerpAPI for intelligent web scraping
-- **Containerization**: Docker & Docker Compose
-- **Authentication**: Environment-based API keys
+### Tech Stack
+- **Backend**: FastAPI (Python 3.11+)
+- **Database**: PostgreSQL (cloud-hosted)
+- **Vector DB**: Qdrant Cloud (cosine similarity)
+- **AI/LLM**: OpenAI (GPT-4o-mini, text-embedding-3-small)
+- **Web Search**: SerpAPI + Tavily API
+- **Caching**: Redis
+- **Migrations**: Alembic
 
-## Prerequisites
+### Core Components
+- **Chat System**: Multi-workflow chatbot with smart routing
+- **Peptide Database**: Vector-based peptide information storage
+- **Web Search**: Intelligent content scraping and processing
+- **Analytics**: Comprehensive usage and cost tracking
+- **Admin Panel**: Management and monitoring interface
+
+## 📋 Prerequisites
 
 - Python 3.11+
-- PostgreSQL database (external hosted)
-- Qdrant Cloud instance
+- PostgreSQL database (cloud recommended)
+- Qdrant Cloud account
 - OpenAI API key
-- SerpAPI key (for web search functionality)
+- SerpAPI key
+- Tavily API key
+- Redis server (optional, for caching)
 
-## Quick Start
+## 🛠️ Installation
 
-### Option 1: Local Development
-
-#### 1. Clone and Setup
+### 1. Clone Repository
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/yourusername/pepti-wiki-ai.git
+cd pepti-wiki-ai
+```
+
+### 2. Create Virtual Environment
+```bash
+python3.11 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+### 3. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Environment Configuration
+Create a `.env` file in the project root:
+
+```bash
+# Server Configuration
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+
+# Database Configuration (Cloud PostgreSQL)
+DATABASE_URL=postgresql+asyncpg://username:password@your-cloud-host:5432/pepti_wiki
+DATABASE_NAME=pepti_wiki
+
+# Qdrant Configuration (Cloud)
+QDRANT_URL=https://your-cluster-id.eu-west-1-0.aws.cloud.qdrant.io:6333
+QDRANT_API_KEY=your_qdrant_api_key_here
+PEPTIDE_COLLECTION=peptides
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379
+REDIS_DB=0
+CACHE_TTL=3600
+
+# API Keys
+OPENAI_API_KEY=your_openai_api_key_here
+SERP_API_KEY=your_serp_api_key_here
+TAVILY_API_KEY=your_tavily_api_key_here
+
+# Pricing Configuration
+SERPAPI_DEVELOPER_PLAN_PRICE=0.015
+OPENAI_GPT4O_INPUT_PRICE=0.005
+OPENAI_GPT4O_OUTPUT_PRICE=0.015
+OPENAI_GPT4O_MINI_INPUT_PRICE=0.00015
+OPENAI_GPT4O_MINI_OUTPUT_PRICE=0.0006
+OPENAI_EMBEDDING_3_LARGE_PRICE=0.00013
+OPENAI_EMBEDDING_3_SMALL_PRICE=0.00002
+OPENAI_EMBEDDING_ADA002_PRICE=0.0001
+TAVILY_BASIC_SEARCH_PRICE=0.001
+TAVILY_ADVANCED_SEARCH_PRICE=0.002
+
+# CORS Configuration
+ALLOWED_HOSTS=["*"]
+```
+
+## 🗄️ Database Setup
+
+### 1. Cloud PostgreSQL Setup
+
+#### Option A: Neon (Recommended - Free tier available)
+1. Sign up at [Neon](https://neon.tech/)
+2. Create a new project
+3. Copy the connection string
+4. Update your `.env` file
+
+#### Option B: Supabase
+1. Sign up at [Supabase](https://supabase.com/)
+2. Create a new project
+3. Go to Settings > Database
+4. Copy the connection string
+
+### 2. Database Migration
+
+#### Using Migration Script (Recommended)
+```bash
+# Initialize database with migrations
+python migrate_db.py init
+
+# Create new migration after model changes
+python migrate_db.py create -m "Add new fields to user table"
+
+# Upgrade database to latest
+python migrate_db.py upgrade
+
+# Show current revision
+python migrate_db.py current
+
+# Show migration history
+python migrate_db.py history
+```
+
+#### Direct Alembic Commands
+```bash
+# Run migrations
+alembic upgrade head
+
+# Create new migration
+alembic revision --autogenerate -m "Description of changes"
+
+# Show current status
+alembic current
+```
+
+## 🔍 Vector Database Setup
+
+### Qdrant Cloud Setup
+1. Sign up at [Qdrant Cloud](https://cloud.qdrant.io/)
+2. Create a new cluster
+3. Note down your cluster URL and API key
+4. Update your `.env` file with the credentials
+
+### Collection Configuration
+- **Collection Name**: `peptides`
+- **Vector Size**: 768 (OpenAI embeddings truncated)
+- **Distance Metric**: Cosine similarity
+- **Payload Fields**: name, overview, mechanism_of_actions, potential_research_fields, text_content
+
+## 🚀 Running the Application
+
+### Development Mode
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Production Mode
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### With Docker
+```bash
+docker-compose up -d
+```
+
+## 📚 API Documentation
+
+Once running, access the interactive API documentation:
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+## 🔧 Core Workflows
+
+### 1. General Chatbot Workflow
+```
+User Query → Generate Embedding → Search Qdrant → 
+If Found: Use Database Result → Generate AI Response
+If Not Found: Trigger Web Search → Process Content → Generate AI Response
+```
+
+### 2. Peptide-Specific Chat Workflow
+```
+Specific Peptide Query → Extract Name → Search Qdrant by Name → 
+Get Peptide Details → Generate Comprehensive Response
+```
+
+### 3. Web Search Integration Workflow
+```
+Low Confidence Result → SerpAPI Search → Scrape Content → 
+Chunk Processing → Embedding Generation → Similarity Calculation → 
+AI Response Generation with Source Citations
+```
+
+### 4. Advanced Peptide Info Generation
+```
+Peptide Name + Requirements → Tavily Search → Accuracy Assessment → 
+If High Accuracy: LLM Tuning → Database Storage → Response
+If Low Accuracy: SerpAPI Fallback → Scraping → LLM Processing → Response
+```
+
+## 📊 Admin Dashboard
+
+### Access Admin Dashboard
+- **URL**: `GET /api/v1/admin-dashboard`
+- **Features**: 
+  - Chat restrictions management
+  - Allowed URLs management
+  - Daily/Weekly/Monthly analytics
+  - Cost tracking and analysis
+  - Server information
+
+### Cost Analytics
+- **Daily Cost Trends**: `GET /api/v1/admin-dashboard/cost-analytics`
+- **Top Costing Services**: `GET /api/v1/admin-dashboard/top-costing-services`
+- **Cost Summary**: `GET /api/v1/admin-dashboard/cost-summary`
+
+## 🔄 Caching System
+
+### Redis Integration
+- **Cache Keys**: `chat_cache:{hash}` (based on query + peptide_name)
+- **TTL**: 1 hour (configurable via `CACHE_TTL`)
+- **Cache Flow**: Always store in database, cache for performance
+
+### Cache Management
+- **Stats**: `GET /api/v1/chat/cache/stats`
+- **Clear Cache**: `DELETE /api/v1/chat/cache/clear`
+
+## 🛡️ Security Features
+
+### Chat Restrictions
+- No medical advice/dosage recommendations
+- Avoid illegal/controlled substance guidance
+- Encourage professional consultation
+- Configurable via admin dashboard
+
+### Allowed URLs
+- Admin-managed domain allowlist
+- Web search results filtered by allowed domains
+- Prevents scraping of unauthorized sites
+
+## 📈 Analytics & Monitoring
+
+### Endpoint Usage Tracking
+- Request/response logging
+- Performance metrics
+- Error tracking
+- Cost calculation per API call
+
+### External API Usage
+- OpenAI token usage tracking
+- SerpAPI request tracking
+- Qdrant operation monitoring
+- Tavily API usage analytics
+
+## 🚀 Deployment
+
+### Production Deployment (Hostinger)
+
+#### 1. Server Setup
+```bash
+# Update system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install essential packages
+sudo apt install -y python3.11 python3.11-pip python3.11-venv git curl wget nginx
+
+# Install system dependencies
+sudo apt install -y gcc g++ libpq-dev
+```
+
+#### 2. Application Deployment
+```bash
+# Clone repository
+git clone https://github.com/yourusername/pepti-wiki-ai.git
 cd pepti-wiki-ai
 
 # Create virtual environment
-python -m venv venv
-
-# Activate virtual environment
-# Windows:
-venv\Scripts\Activate.ps1
-# Linux/Mac:
+python3.11 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Run migrations
+python migrate_db.py init
 ```
 
-#### 2. Environment Configuration
+#### 3. Nginx Configuration
+Create `/etc/nginx/sites-available/pepti-wiki`:
+```nginx
+server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+#### 4. Systemd Service
+Create `/etc/systemd/system/pepti-wiki.service`:
+```ini
+[Unit]
+Description=Pepti Wiki AI FastAPI Application
+After=network.target
+
+[Service]
+Type=exec
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/your/pepti-wiki-ai
+Environment=PATH=/path/to/your/pepti-wiki-ai/venv/bin
+ExecStart=/path/to/your/pepti-wiki-ai/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 5. SSL Certificate
 ```bash
-# Copy environment template
-cp env.example .env
+# Install Certbot
+sudo apt install -y certbot python3-certbot-nginx
 
-# Edit .env with your actual values
-nano .env  # or use your preferred editor
+# Obtain SSL certificate
+sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
 ```
 
-#### 3. Configure External Services
-
-**External PostgreSQL Database:**
-```env
-# Neon Database Example:
-DATABASE_URL=postgresql://username:password@ep-xxx-xxx-xxx.region.aws.neon.tech/dbname?sslmode=require
-DATABASE_NAME=your_database_name
-
-# Supabase Example:
-DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.xxx.supabase.co:5432/postgres
-DATABASE_NAME=postgres
-
-# Railway Example:
-DATABASE_URL=postgresql://postgres:password@containers-us-west-xxx.railway.app:5432/railway
-DATABASE_NAME=railway
-```
-
-**Other Services:**
-```env
-# Qdrant Vector Database
-QDRANT_URL=https://your-qdrant-instance.cloud.qdrant.io:6333
-QDRANT_API_KEY=your_qdrant_api_key
-PEPTIDE_COLLECTION=peptides
-
-# API Keys
-OPENAI_API_KEY=your_openai_api_key
-SERP_API_KEY=your_serp_api_key
-
-# Server Settings
-HOST=0.0.0.0
-PORT=8000
-DEBUG=true
-```
-
-#### 4. Run Locally
-```bash
-# Start the application
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# Or using Python directly
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Option 2: Docker Deployment
-
-#### 1. Environment Setup
-```bash
-# Copy environment template
-cp env.example .env
-
-# Edit .env with your actual values
-nano .env
-```
-
-#### 2. Build and Run with Docker
-```bash
-# Build and start the application
-docker-compose up -d
-
-# View logs
-docker-compose logs -f app
-
-# Stop the application
-docker-compose down
-
-# Restart the application
-docker-compose restart
-```
-
-#### 3. Manual Docker Commands
-```bash
-# Build the image
-docker build -t pepti-wiki-ai .
-
-# Run the container
-docker run -d \
-  --name pepti-wiki-app \
-  -p 8000:8000 \
-  --env-file .env \
-  pepti-wiki-ai
-
-# View logs
-docker logs -f pepti-wiki-app
-
-# Stop container
-docker stop pepti-wiki-app
-```
-
-## API Endpoints
-
-### Root Endpoints
-- **Root**: `GET /` - Welcome message and API status
-- **Health Check**: `GET /health` - Service health status
-- **API Documentation**: `GET /docs` - Interactive API documentation (Swagger UI)
-- **OpenAPI Schema**: `GET /openapi.json` - OpenAPI specification
-
-### API v1 Endpoints
-
-#### Peptide Management (`/api/v1/peptides/`)
-- **Create Peptide**: `POST /api/v1/peptides/` - Add new peptide to vector database
-- **Delete Peptide**: `DELETE /api/v1/peptides/{peptide_name}` - Remove peptide by name
-- **Get Recommendations**: `GET /api/v1/peptides/recommendations/{peptide_name}` - Find similar peptides
-
-#### Chat & AI Queries (`/api/v1/chat/`)
-- **General Search**: `POST /api/v1/chat/search` - AI-powered peptide search with vector similarity
-- **Specific Peptide Query**: `POST /api/v1/chat/query/{peptide_name}` - Query specific peptide with AI
-
-#### Web Search & Scraping (`/api/v1/search/`)
-- **Peptide Web Search**: `POST /api/v1/search/peptide` - Search web for peptide information using SerpAPI
-
-#### Analytics (`/api/v1/analytics/`)
-- **Daily Usage**: `GET /api/v1/analytics/daily?days=7` - Daily API usage statistics
-- **Weekly Usage**: `GET /api/v1/analytics/weekly?weeks=4` - Weekly API usage statistics
-- **Monthly Usage**: `GET /api/v1/analytics/monthly?months=6` - Monthly API usage statistics
-
-#### URL Management (`/api/v1/allowed-urls/`)
-- **Add Allowed URL**: `POST /api/v1/allowed-urls/` - Add URL to allowed scraping list
-- **List Allowed URLs**: `GET /api/v1/allowed-urls/` - Get all allowed URLs
-- **Delete Allowed URL**: `DELETE /api/v1/allowed-urls/{url_id}` - Remove URL from allowed list
-
-#### Chat Restrictions (`/api/v1/chat-restrictions/`)
-- **Add Restriction**: `POST /api/v1/chat-restrictions/` - Add new LLM behavior restriction
-- **List Restrictions**: `GET /api/v1/chat-restrictions/` - Get all chat restrictions
-- **Delete Restriction**: `DELETE /api/v1/chat-restrictions/{restriction_text}` - Remove restriction by text
-
-## Usage Examples
-
-### 1. Create a Peptide
-```bash
-curl -X POST "http://localhost:8000/api/v1/peptides/" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "BPC-157",
-    "overview": "A synthetic peptide with regenerative properties",
-    "mechanism_of_actions": "Promotes tissue repair and regeneration",
-    "potential_research_fields": "Wound healing, tissue regeneration, anti-inflammatory"
-  }'
-```
-
-### 2. Query a Specific Peptide
-```bash
-curl -X POST "http://localhost:8000/api/v1/chat/query/BPC-157" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the main benefits of BPC-157?"
-  }'
-```
-
-### 3. General Peptide Search
-```bash
-curl -X POST "http://localhost:8000/api/v1/chat/search" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What peptides are good for muscle recovery?"
-  }'
-```
-
-### 4. Web Search for Peptide Information
-```bash
-curl -X POST "http://localhost:8000/api/v1/search/peptide" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "BPC-157 research studies benefits"
-  }'
-```
-
-### 5. Get Similar Peptides
-```bash
-curl -X GET "http://localhost:8000/api/v1/peptides/recommendations/BPC-157"
-```
-
-### 6. Add Chat Restriction
-```bash
-curl -X POST "http://localhost:8000/api/v1/chat-restrictions/" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "restriction_text": "Do not provide medical advice or dosage recommendations"
-  }'
-```
-
-### 7. Add Allowed URL
-```bash
-curl -X POST "http://localhost:8000/api/v1/allowed-urls/" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://example.com",
-    "description": "Trusted peptide research site"
-  }'
-```
-
-## Project Structure
-
-```
-pepti-wiki-ai/
-├── app/                           # Main application code
-│   ├── __init__.py               # Package initialization
-│   ├── main.py                   # FastAPI application entry point
-│   │
-│   ├── api/                      # API layer
-│   │   ├── __init__.py
-│   │   └── v1/                   # API version 1
-│   │       ├── __init__.py
-│   │       ├── router.py         # Main API router configuration
-│   │       └── endpoints/        # API endpoint implementations
-│   │           ├── __init__.py
-│   │           ├── allowed_urls.py      # URL management endpoints
-│   │           ├── analytics.py         # Analytics endpoints
-│   │           ├── chat.py              # Chat and AI query endpoints
-│   │           ├── chat_restrictions.py # Chat restriction management
-│   │           ├── peptides.py          # Peptide CRUD operations
-│   │           └── search.py            # Web search and scraping endpoints
-│   │
-│   ├── core/                     # Core application components
-│   │   ├── __init__.py
-│   │   ├── config.py             # Settings and environment variables
-│   │   ├── database.py           # Database connection and initialization
-│   │   └── exceptions.py         # Custom exception classes
-│   │
-│   ├── middleware/               # FastAPI middleware
-│   │   ├── __init__.py
-│   │   └── analytics_middleware.py  # API usage tracking middleware
-│   │
-│   ├── models/                   # Data models and schemas
-│   │   ├── __init__.py           # Model exports
-│   │   ├── allowed_url.py        # URL management models
-│   │   ├── analytics.py          # Analytics data models
-│   │   ├── base.py               # Base model classes
-│   │   ├── chat_restriction.py   # Chat restriction models
-│   │   ├── peptide.py            # Peptide data models
-│   │   └── search.py             # Search and scraping models
-│   │
-│   ├── services/                 # Business logic layer
-│   │   ├── __init__.py
-│   │   ├── allowed_url_service.py    # URL management business logic
-│   │   ├── analytics_service.py      # Analytics processing
-│   │   ├── chat_restriction_service.py # Chat restriction management
-│   │   ├── peptide_service.py        # Peptide operations and AI queries
-│   │   ├── qdrant_service.py         # Vector database operations
-│   │   └── search_service.py         # Web search and content processing
-│   │
-│   └── utils/                    # Utility functions and helpers
-│       ├── __init__.py
-│       └── helpers.py            # Common utility functions
-│
-├── .dockerignore                 # Docker ignore file
-├── .gitignore                    # Git ignore file
-├── Dockerfile                    # Docker image configuration
-├── docker-compose.yml            # Docker Compose configuration
-├── requirements.txt              # Python dependencies
-├── env.example                   # Environment variables template
-├── venv/                         # Python virtual environment
-└── README.md                     # This file
-```
-
-## Component Details
-
-### API Layer (`app/api/`)
-- **Router Configuration**: Centralized endpoint registration and URL prefixing
-- **Endpoint Separation**: Each domain has its own endpoint file for maintainability
-- **Request/Response Models**: Consistent API contract using Pydantic models
-
-### Core Layer (`app/core/`)
-- **Configuration Management**: Environment-based settings with validation
-- **Database Connection**: PostgreSQL connection pooling and initialization
-- **Exception Handling**: Custom exception classes for consistent error responses
-
-### Models Layer (`app/models/`)
-- **SQLAlchemy Models**: Database table definitions and relationships
-- **Pydantic Schemas**: API request/response validation and serialization
-- **Data Validation**: Input/output data validation and transformation
-
-### Services Layer (`app/services/`)
-- **Business Logic**: Core application functionality implementation
-- **External Integrations**: OpenAI API, Qdrant, SerpAPI integrations
-- **Data Processing**: Content scraping, chunking, and similarity search
-
-### Middleware (`app/middleware/`)
-- **Analytics Tracking**: Automatic API usage monitoring and logging
-- **Request Processing**: Pre/post request processing and logging
-
-## Configuration
+## 🔧 Configuration
 
 ### Environment Variables
-
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
 | `DATABASE_URL` | PostgreSQL connection string | Yes | - |
-| `DATABASE_NAME` | Database name | Yes | - |
-| `QDRANT_URL` | Qdrant vector database URL | Yes | - |
+| `QDRANT_URL` | Qdrant cluster URL | Yes | - |
 | `QDRANT_API_KEY` | Qdrant API key | Yes | - |
 | `OPENAI_API_KEY` | OpenAI API key | Yes | - |
-| `SERP_API_KEY` | SerpAPI key for web search | Yes | - |
-| `PEPTIDE_COLLECTION` | Qdrant collection name | No | `peptides` |
-| `HOST` | Server host | No | `0.0.0.0` |
-| `PORT` | Server port | No | `8000` |
-| `DEBUG` | Debug mode | No | `false` |
-| `ALLOWED_HOSTS` | CORS allowed origins | No | `["*"]` |
+| `SERP_API_KEY` | SerpAPI key | Yes | - |
+| `TAVILY_API_KEY` | Tavily API key | Yes | - |
+| `REDIS_URL` | Redis connection string | No | `redis://localhost:6379` |
+| `CACHE_TTL` | Cache TTL in seconds | No | `3600` |
+| `CONFIDENCE_SCORE` | Minimum confidence threshold | No | `70` |
+| `MIN_VECTOR_SIMILARITY` | Vector similarity threshold | No | `0.35` |
 
-### Database Tables
+### Pricing Configuration
+All pricing is configurable via environment variables:
+- OpenAI model pricing (per 1K tokens)
+- SerpAPI pricing (per request)
+- Tavily pricing (per request)
+- Qdrant pricing (currently free tier)
 
-The application automatically creates these tables on startup:
-- `allowed_urls` - URLs allowed for web scraping
-- `chat_restrictions` - LLM behavior restrictions
-- `endpoint_usage` - API usage analytics
+## 📝 API Endpoints
 
-## Development
+### Chat Endpoints
+- `POST /api/v1/chat/search` - General peptide search
+- `POST /api/v1/chat/query/{peptide_name}` - Specific peptide query
+- `GET /api/v1/chat/sessions` - List chat sessions
+- `GET /api/v1/chat/sessions/{session_id}` - Get session history
 
-### Adding New Endpoints
+### Peptide Endpoints
+- `GET /api/v1/peptides/search` - Search peptides by query
+- `GET /api/v1/peptides/{peptide_name}` - Get specific peptide info
+- `GET /api/v1/peptides/similar/{peptide_name}` - Get similar peptides
+- `POST /api/v1/peptides` - Add new peptide
 
-1. Create endpoint file in `app/api/v1/endpoints/`
-2. Add to router in `app/api/v1/router.py`
-3. Create corresponding service in `app/services/`
-4. Add models in `app/models/` if needed
-5. Update this README with endpoint documentation
+### Peptide Info Generation
+- `POST /api/v1/peptide-info/generate` - Generate comprehensive peptide info
+- `GET /api/v1/peptide-info/sessions` - List peptide info sessions
+- `GET /api/v1/peptide-info/sessions/{session_id}` - Get session details
 
-### Adding New Models
+### Search Endpoints
+- `POST /api/v1/search/peptide` - Web search for peptide information
+- `GET /api/v1/search/sources` - Get search sources
 
-1. Create SQLAlchemy model in `app/models/`
-2. Create Pydantic schemas in the same file
-3. Update `app/models/__init__.py`
-4. Add to database initialization in `app/core/database.py`
+### Admin Endpoints
+- `GET /api/v1/admin-dashboard` - Complete admin dashboard data
+- `GET /api/v1/admin-dashboard/cost-analytics` - Cost analytics
+- `GET /api/v1/admin-dashboard/top-costing-services` - Top costing services
+- `GET /api/v1/admin-dashboard/cost-summary` - Cost summary
 
+### Management Endpoints
+- `GET /api/v1/chat-restrictions` - List chat restrictions
+- `POST /api/v1/chat-restrictions` - Add chat restriction
+- `DELETE /api/v1/chat-restrictions` - Remove chat restriction
+- `GET /api/v1/allowed-urls` - List allowed URLs
+- `POST /api/v1/allowed-urls` - Add allowed URL
+- `DELETE /api/v1/allowed-urls/{url_id}` - Remove allowed URL
 
+### Analytics Endpoints
+- `GET /api/v1/analytics/daily` - Daily usage analytics
+- `GET /api/v1/analytics/weekly` - Weekly usage analytics
+- `GET /api/v1/analytics/monthly` - Monthly usage analytics
+- `GET /api/v1/analytics/external-api-summary` - External API usage summary
 
-## Troubleshooting
+## 🧪 Testing
+
+### Health Check
+```bash
+curl http://localhost:8000/health
+```
+
+### Test Chat Endpoint
+```bash
+curl -X POST "http://localhost:8000/api/v1/chat/search" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What peptides help with muscle recovery?"}'
+```
+
+### Test Peptide Search
+```bash
+curl "http://localhost:8000/api/v1/peptides/search?query=BPC-157"
+```
+
+## 🔍 Troubleshooting
 
 ### Common Issues
 
-#### Database Connection Failed
-```
-Database initialization failed: connection to server failed
-```
-**Solution**: Check your `DATABASE_URL` and ensure the external PostgreSQL service is accessible.
-
-#### Qdrant Connection Error
-```
-Failed to connect to Qdrant: connection refused
-```
-**Solution**: Verify your `QDRANT_URL` and `QDRANT_API_KEY` are correct.
-
-#### Port Already in Use
-```
-Error: Port 8000 is already in use
-```
-**Solution**: Change the port in configuration or stop the conflicting service.
-
-#### Environment Variables Not Loaded
-```
-Environment variable not found
-```
-**Solution**: Ensure your `.env` file exists and contains all required variables.
-
-### Debug Mode
-
-Enable debug mode for more detailed logging:
-```env
-DEBUG=true
-```
-
-### Logs
-
+#### Database Connection Issues
 ```bash
-# Local development
-# Check console output
-
-# Docker
-docker-compose logs -f app
-docker logs -f pepti-wiki-app
+# Test database connection
+python -c "
+import psycopg2
+try:
+    conn = psycopg2.connect('your_database_url_here')
+    print('Database connection successful')
+    conn.close()
+except Exception as e:
+    print(f'Database connection failed: {e}')
+"
 ```
 
-## Support
+#### Application Won't Start
+```bash
+# Check service status
+sudo systemctl status pepti-wiki
 
-For issues and questions:
-- Check the troubleshooting section
-- Review application logs
-- Check health endpoints
-- Verify external service connectivity
+# Check logs
+sudo journalctl -u pepti-wiki -n 50
+
+# Test manually
+cd /path/to/your/project
+source venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+#### Migration Issues
+```bash
+# Check current revision
+python migrate_db.py current
+
+# Show migration history
+python migrate_db.py history
+
+# Force upgrade
+alembic upgrade head
+```
+
+## 📊 Performance Optimization
+
+### Production Recommendations
+1. **Use Gunicorn**: For production deployment
+2. **Enable Redis Caching**: For improved response times
+3. **Database Connection Pooling**: Configure proper pool settings
+4. **CDN**: Use CDN for static assets
+5. **Monitoring**: Set up proper logging and monitoring
+
+### Scaling Considerations
+- **Horizontal Scaling**: Multiple application instances behind load balancer
+- **Database Scaling**: Use managed PostgreSQL with read replicas
+- **Vector DB Scaling**: Qdrant Cloud handles scaling automatically
+- **Caching Strategy**: Redis clustering for high availability
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🆘 Support
+
+For support and questions:
+1. Check the [troubleshooting section](#troubleshooting)
+2. Review the [API documentation](http://localhost:8000/docs)
+3. Open an issue on GitHub
+4. Contact the development team
+
+## 🔄 Changelog
+
+### Version 1.0.0
+- Initial release with core functionality
+- AI-powered peptide chatbot
+- Vector similarity search
+- Web search integration
+- Cost tracking and analytics
+- Admin dashboard
+- Database migration system
+- Redis caching integration
+
+---
+
+**Built with ❤️ for the peptide research community**

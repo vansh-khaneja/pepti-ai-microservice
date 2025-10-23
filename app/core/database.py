@@ -32,7 +32,32 @@ def get_db() -> Session:
         db.close()
 
 def init_db():
-    """Initialize database tables"""
+    """Initialize database tables using Alembic migrations"""
+    try:
+        import subprocess
+        import sys
+        
+        # Run Alembic migrations to ensure database is up to date
+        result = subprocess.run([
+            sys.executable, "-m", "alembic", "upgrade", "head"
+        ], capture_output=True, text=True, cwd=".")
+        
+        if result.returncode == 0:
+            print("✅ Database migrations applied successfully")
+            print(result.stdout)
+        else:
+            print(f"❌ Migration failed: {result.stderr}")
+            # Fallback to manual table creation if migrations fail
+            print("🔄 Falling back to manual table creation...")
+            _fallback_table_creation()
+            
+    except Exception as e:
+        print(f"❌ Error running migrations: {e}")
+        print("🔄 Falling back to manual table creation...")
+        _fallback_table_creation()
+
+def _fallback_table_creation():
+    """Fallback method for manual table creation"""
     try:
         # Check if tables exist and create them if they don't
         inspector = inspect(engine)
@@ -41,23 +66,26 @@ def init_db():
         if not existing_tables:
             # Create all tables if none exist
             Base.metadata.create_all(bind=engine)
-            print("Database tables created successfully")
+            print("✅ Database tables created successfully")
         else:
             # Check if our specific tables exist
-            required_tables = ['allowed_urls', 'chat_restrictions', 'endpoint_usage', 'external_api_usage', 'chat_sessions', 'chat_messages', 'peptide_info_sessions', 'peptide_info_messages']
+            required_tables = [
+                'allowed_urls', 'chat_restrictions', 'endpoint_usage', 'external_api_usage', 
+                'chat_sessions', 'chat_messages', 'peptide_info_sessions', 'peptide_info_messages'
+            ]
             missing_tables = [table for table in required_tables if table not in existing_tables]
             
             if missing_tables:
                 # Only create missing tables
                 Base.metadata.create_all(bind=engine)
-                print(f"Created missing tables: {missing_tables}")
+                print(f"✅ Created missing tables: {missing_tables}")
             else:
                 # Check if existing tables need schema updates
                 update_existing_schemas(inspector)
-                print("All required tables already exist")
+                print("✅ All required tables already exist")
                 
     except Exception as e:
-        print(f"Error initializing database tables: {e}")
+        print(f"❌ Error in fallback table creation: {e}")
         raise
 
 def update_existing_schemas(inspector):

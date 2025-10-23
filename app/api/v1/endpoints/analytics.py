@@ -3,8 +3,11 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.analytics_service import AnalyticsService
 from typing import Optional
-from app.models.analytics import EndpointUsageCreate
+from app.models.analytics import (
+    EndpointUsageCreate
+)
 from app.utils.helpers import logger, log_api_call
+from datetime import date
 
 router = APIRouter()
 
@@ -164,3 +167,5 @@ async def get_external_api_summary(
             status_code=500,
             detail=f"Failed to get external API summary: {str(e)}"
         )
+
+

@@ -41,6 +41,29 @@ class Settings(BaseSettings):
     CONFIDENCE_SCORE: int = 70  # Minimum confidence score for chunk relevance (0-100)
     MIN_VECTOR_SIMILARITY: float = 0.35  # If below, trigger LLM-judge path
     
+    # OpenAI Pricing (per 1K tokens)
+    OPENAI_GPT4O_INPUT_PRICE: float = 0.005
+    OPENAI_GPT4O_OUTPUT_PRICE: float = 0.015
+    OPENAI_GPT4O_MINI_INPUT_PRICE: float = 0.00015
+    OPENAI_GPT4O_MINI_OUTPUT_PRICE: float = 0.0006
+    OPENAI_EMBEDDING_3_LARGE_PRICE: float = 0.00013
+    OPENAI_EMBEDDING_3_SMALL_PRICE: float = 0.00002
+    OPENAI_EMBEDDING_ADA002_PRICE: float = 0.0001
+    
+    # Tavily Pricing (per request)
+    TAVILY_BASIC_SEARCH_PRICE: float = 0.001
+    TAVILY_ADVANCED_SEARCH_PRICE: float = 0.002
+    
+    # SerpAPI Pricing (per request)
+    SERPAPI_DEVELOPER_PLAN_PRICE: float = 0.015
+    
+    # Qdrant Pricing (per request) - Currently free tier
+    QDRANT_SEARCH_PRICE: float = 0.0
+    QDRANT_UPSERT_PRICE: float = 0.0
+    QDRANT_RETRIEVE_PRICE: float = 0.0
+    QDRANT_SCROLL_PRICE: float = 0.0
+    QDRANT_DELETE_PRICE: float = 0.0
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

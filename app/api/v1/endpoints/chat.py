@@ -4,7 +4,7 @@ from app.core.database import get_db
 from app.services.peptide_service import PeptideService
 from app.services.chat_session_service import ChatSessionService
 from app.services.intent_router_service import IntentRouterService
-from app.services.redis_cache_service import RedisCacheService
+from app.repositories import repository_manager
 from app.utils.helpers import logger, log_api_call
 from typing import Optional
 from datetime import datetime
@@ -31,8 +31,8 @@ async def search_and_answer(
         # Log the API call
         log_api_call("/chat/search", query)
         
-        # Initialize Redis cache service
-        cache_service = RedisCacheService()
+        # Initialize cache repository
+        cache_repo = repository_manager.cache
         
         # Initialize services first (needed for both cache hit and miss)
         session_service = ChatSessionService(db)
@@ -50,7 +50,7 @@ async def search_and_answer(
         )
         
         # Check cache first
-        cached_response = cache_service.get_cached_response(query, endpoint_type="general")
+        cached_response = cache_repo.get_cached_response(query, endpoint_type="general")
         if cached_response:
             logger.info(f"Returning cached response for query: {query[:50]}...")
             
@@ -59,14 +59,14 @@ async def search_and_answer(
                 session_id=session.session_id,
                 role="assistant",
                 query=query,
-                response=cached_response["response"]["llm_response"],
-                score=cached_response["response"].get("similarity_score"),
-                source=cached_response["response"].get("source"),
+                response=cached_response["llm_response"],
+                score=cached_response.get("similarity_score"),
+                source=cached_response.get("source"),
                 metadata={"cached": True}
             )
             
             # Add session info to cached response
-            result = cached_response["response"].copy()
+            result = cached_response.copy()
             result["session_id"] = session.session_id
             
             return {
@@ -111,7 +111,7 @@ async def search_and_answer(
         result["timestamp"] = datetime.utcnow().isoformat()
         
         # Cache the response
-        cache_service.set_cached_response(query, result, endpoint_type="general")
+        cache_repo.set_cached_response(query, result, endpoint_type="general")
         
         return {
             "success": True,
@@ -220,8 +220,8 @@ async def query_specific_peptide(
         # Log the API call
         log_api_call(f"/chat/query/{peptide_name}", query)
         
-        # Initialize Redis cache service
-        cache_service = RedisCacheService()
+        # Initialize cache repository
+        cache_repo = repository_manager.cache
         
         # Initialize services first (needed for both cache hit and miss)
         session_service = ChatSessionService(db)
@@ -239,7 +239,7 @@ async def query_specific_peptide(
         )
         
         # Check cache first
-        cached_response = cache_service.get_cached_response(query, peptide_name, endpoint_type="specific")
+        cached_response = cache_repo.get_cached_response(query, peptide_name, endpoint_type="specific")
         if cached_response:
             logger.info(f"Returning cached response for peptide query: {peptide_name} - {query[:50]}...")
             
@@ -248,14 +248,14 @@ async def query_specific_peptide(
                 session_id=session.session_id,
                 role="assistant",
                 query=query,
-                response=cached_response["response"]["llm_response"],
-                score=cached_response["response"].get("similarity_score"),
-                source=cached_response["response"].get("source"),
+                response=cached_response["llm_response"],
+                score=cached_response.get("similarity_score"),
+                source=cached_response.get("source"),
                 metadata={"cached": True, "peptide_name": peptide_name}
             )
             
             # Add session info to cached response
-            result = cached_response["response"].copy()
+            result = cached_response.copy()
             result["session_id"] = session.session_id
             
             return {
@@ -299,7 +299,7 @@ async def query_specific_peptide(
         result["timestamp"] = datetime.utcnow().isoformat()
         
         # Cache the response
-        cache_service.set_cached_response(query, result, peptide_name, endpoint_type="specific")
+        cache_repo.set_cached_response(query, result, peptide_name, endpoint_type="specific")
         
         return {
             "success": True,
@@ -416,8 +416,8 @@ async def get_cache_stats():
     Get Redis cache statistics and information
     """
     try:
-        cache_service = RedisCacheService()
-        stats = cache_service.get_cache_stats()
+        cache_repo = repository_manager.cache
+        stats = cache_repo.get_cache_stats()
         
         return {
             "success": True,
@@ -438,8 +438,8 @@ async def clear_cache():
     Clear all chat cache entries
     """
     try:
-        cache_service = RedisCacheService()
-        deleted_count = cache_service.invalidate_cache()
+        cache_repo = repository_manager.cache
+        deleted_count = cache_repo.clear_cache()
         
         return {
             "success": True,

@@ -10,50 +10,21 @@ from sqlalchemy.orm import Session
 from app.models.search import SearchRequest, SearchResult, ContentChunk, SearchResponse
 from app.core.config import settings
 from app.utils.helpers import logger, ExternalApiTimer
+from app.providers.provider_manager import provider_manager
+from app.repositories import repository_manager
 from datetime import datetime
 
 class SearchService:
     def __init__(self):
         self.serp_api_key = settings.SERP_API_KEY
-        self.openai_api_key = settings.OPENAI_API_KEY
         self.chunk_size = 1000  # characters per chunk
         self.chunk_overlap = 200  # overlap between chunks
         self.max_chunks_per_site = 5  # maximum chunks per website
     
     def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI API"""
+        """Generate embedding using OpenAI API via provider"""
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-            
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "input": text,
-                "model": "text-embedding-3-large"
-            }
-            
-            with ExternalApiTimer("openai", operation="embeddings.create") as t:
-                response = requests.post(
-                    "https://api.openai.com/v1/embeddings",
-                    headers=headers,
-                    json=payload,
-                    timeout=30
-                )
-                t.set_status(status_code=response.status_code, success=(response.status_code == 200))
-            
-            if response.status_code == 200:
-                data = response.json()
-                embedding = data["data"][0]["embedding"]
-                logger.info(f"Generated embedding for text length {len(text)}, dimensions: {len(embedding)}")
-                return embedding
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                raise Exception(f"Failed to generate embedding: {response.status_code}")
-                
+            return provider_manager.openai.generate_embedding(text)
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
             raise
@@ -213,9 +184,14 @@ class SearchService:
         return scraped_content
 
     def _is_url_allowed(self, url: str, db: Session) -> bool:
-        """Check if URL is in allowed URLs list from database"""
+        """Check if URL is in allowed URLs list using relational repository"""
         try:
-            from app.services.allowed_url_service import AllowedUrlService
+            # Use relational repository to check allowed URLs
+            relational_repo = repository_manager.relational
+            
+            # Query allowed URLs table
+            query = "SELECT url_pattern FROM allowed_urls WHERE is_active = true"
+            allowed_urls = relational_repo.execute_raw_query(query)
             
             # Extract domain from URL
             from urllib.parse import urlparse
@@ -226,28 +202,28 @@ class SearchService:
             if domain.startswith('www.'):
                 domain = domain[4:]
             
-            # Check if domain exists in allowed_urls table
-            allowed_url_service = AllowedUrlService(db)
-            allowed_urls = allowed_url_service.get_all_allowed_urls()
-            
-            # First check regular URLs
+            # Check each allowed URL pattern
             for allowed_url in allowed_urls:
-                # Skip wildcard URLs for now
-                if '*' in allowed_url.url:
-                    continue
-                    
-                allowed_domain = urlparse(allowed_url.url).netloc.lower()
+                pattern = allowed_url["url_pattern"]
+                
+                # Handle global wildcard "*" (allows any domain)
+                if pattern == "*":
+                    logger.info(f"URL {url} allowed via global wildcard '*'")
+                    return True
+                
+                # Handle domain pattern (e.g., "example.com")
+                if pattern.startswith("*."):
+                    allowed_domain = pattern[2:]  # Remove "*."
+                    if domain == allowed_domain or domain.endswith('.' + allowed_domain):
+                        return True
+                
+                # Handle exact domain match
+                allowed_domain = urlparse(pattern).netloc.lower()
                 if allowed_domain.startswith('www.'):
                     allowed_domain = allowed_domain[4:]
                 
                 # Check if domain matches exactly or is a subdomain
                 if domain == allowed_domain or domain.endswith('.' + allowed_domain):
-                    return True
-            
-            # Check for global wildcard "*" (allows any domain)
-            for allowed_url in allowed_urls:
-                if allowed_url.url == '*':
-                    logger.info(f"URL {url} allowed via global wildcard '*'")
                     return True
             
             return False
@@ -383,9 +359,6 @@ class SearchService:
     def _generate_llm_response(self, relevant_chunks: List[ContentChunk], search_request: SearchRequest) -> str:
         """Generate response using OpenAI LLM via direct HTTP requests"""
         try:
-            if not self.openai_api_key:
-                return "LLM processing not available - API key not configured"
-            
             # Prepare context from relevant chunks
             context = "\n\n".join([
                 f"Source {i+1} ({chunk.source_url}):\n{chunk.content}"
@@ -409,12 +382,6 @@ class SearchService:
             - Keep the response focused and to the point
             """
             
-            # Call OpenAI Responses API directly via HTTP request
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-            
             system_instruction = (
                 "You are a helpful assistant specializing in peptide research and information. "
                 "Provide focused, concise responses that directly answer the user's specific question "
@@ -422,45 +389,15 @@ class SearchService:
             )
             full_input = f"{system_instruction}\n\n{prompt}"
             
-            payload = {
-                "model": "gpt-4o-mini",
-                "input": full_input,
-                "temperature": 0.3,
-                "max_output_tokens": 600  # Reduced to ensure under 1000 characters
-            }
+            response = provider_manager.openai.generate_response(
+                input_text=full_input,
+                model="gpt-4o-mini",
+                temperature=0.3,
+                max_output_tokens=600,
+                timeout=45
+            )
             
-            with ExternalApiTimer("openai", operation="responses.create") as t:
-                response = requests.post(
-                    "https://api.openai.com/v1/responses",
-                    headers=headers,
-                    json=payload,
-                    timeout=45
-                )
-                t.set_status(status_code=response.status_code, success=(response.status_code == 200))
-            
-            if response.status_code == 200:
-                data = response.json()
-                # Parse Responses API response format
-                if data.get("status") == "completed" and "output" in data:
-                    # Extract text from the output array
-                    output_text = ""
-                    for output_item in data["output"]:
-                        if output_item.get("type") == "message" and "content" in output_item:
-                            for content_item in output_item["content"]:
-                                if content_item.get("type") == "output_text" and "text" in content_item:
-                                    output_text += content_item["text"]
-                    
-                    if output_text.strip():
-                        return self._clean_llm_response(output_text.strip())
-                    else:
-                        logger.error("No text found in Responses API output")
-                        return self._clean_llm_response("No response generated")
-                else:
-                    logger.error(f"OpenAI Responses API returned unexpected status: {data.get('status')}")
-                    return self._clean_llm_response(json.dumps(data)[:1000])
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                return f"Error from OpenAI API: {response.status_code}"
+            return self._clean_llm_response(response)
             
         except Exception as e:
             logger.error(f"Error generating LLM response: {str(e)}")

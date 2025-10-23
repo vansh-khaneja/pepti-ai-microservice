@@ -3,6 +3,7 @@ from app.models.peptide_info_session import PeptideInfoSession, PeptideInfoMessa
 from app.services.search_service import SearchService
 from app.core.config import settings
 from app.utils.helpers import logger, ExternalApiTimer
+from app.providers.provider_manager import provider_manager
 from typing import Dict, Any, List, Optional
 import requests
 import json
@@ -13,7 +14,6 @@ class PeptideInfoService:
         """Initialize the peptide info service"""
         self.search_service = SearchService()
         self.tavily_api_key = settings.TAVILY_API_KEY
-        self.openai_api_key = settings.OPENAI_API_KEY
         self.accuracy_threshold = 0.75  # Threshold for Tavily accuracy
 
     def generate_peptide_info(self, peptide_name: str, requirements: str = "", db: Session = None) -> Dict[str, Any]:
@@ -285,43 +285,25 @@ IMPORTANT FORMATTING REQUIREMENTS:
 - Keep the response focused and to the point
 """
             
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
+            messages = [
+                {"role": "system", "content": "You are a peptide research expert providing accurate, scientific information."},
+                {"role": "user", "content": prompt}
+            ]
+
+            response = provider_manager.openai.generate_chat_completion(
+                messages=messages,
+                model="gpt-4o-mini",
+                max_tokens=2000,
+                temperature=0.3,
+                timeout=60
+            )
             
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": "You are a peptide research expert providing accurate, scientific information."},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": 2000,
-                "temperature": 0.3
-            }
+            # Ensure response is ≤ 1000 characters
+            if len(response) > 1000:
+                logger.info(f"Response was {len(response)} characters, truncating to 1000 characters")
+                response = response[:1000] + "..."
             
-            with ExternalApiTimer("openai", operation="chat.completions") as t:
-                response = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60
-                )
-                t.set_status(status_code=response.status_code, success=(response.status_code == 200))
-            
-            if response.status_code == 200:
-                data = response.json()
-                response_text = data["choices"][0]["message"]["content"]
-                
-                # Ensure response is ≤ 1000 characters
-                if len(response_text) > 1000:
-                    logger.info(f"Response was {len(response_text)} characters, truncating to 1000 characters")
-                    response_text = response_text[:1000] + "..."
-                
-                return response_text
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                return "Error generating response with LLM."
+            return response
                 
         except Exception as e:
             logger.error(f"Error tuning with LLM: {str(e)}")
@@ -330,55 +312,9 @@ IMPORTANT FORMATTING REQUIREMENTS:
     def _judge_relevance_yes_no(self, user_query: str, candidate_content: str, peptide_name: Optional[str]) -> bool:
         """Binary LLM judge: returns True if content is relevant to the query/topic, else False"""
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-
-            name_hint = peptide_name or "the peptide"
-            system_prompt = (
-                "You are a strict binary relevance judge. "
-                "Given a user query and candidate content, respond with exactly one word: Yes or No. "
-                "Say Yes only if the content directly helps answer the query about the specified peptide/topic."
-            )
-            user_prompt = (
-                f"Query about {name_hint}: {user_query}\n\n"
-                f"Candidate Content:\n{candidate_content}\n\n"
-                "Answer with only one word: Yes or No"
-            )
-
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.0,
-                "max_tokens": 2
-            }
-
-            with ExternalApiTimer("openai", operation="chat.completions") as t:
-                response = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=30
-                )
-                t.set_status(status_code=response.status_code, success=(response.status_code == 200))
-
-            if response.status_code == 200:
-                data = response.json()
-                answer = data["choices"][0]["message"]["content"].strip().lower()
-                return answer.startswith("y")  # yes
-            else:
-                logger.error(f"OpenAI Judge API error: {response.status_code} - {response.text}")
-                return False
-
+            return provider_manager.openai.judge_relevance(user_query, candidate_content, peptide_name)
         except Exception as e:
-            logger.error(f"Error in LLM judge: {str(e)}")
+            logger.warning(f"Judge relevance failed: {str(e)}")
             return False
 
     def _search_with_serpapi(self, peptide_name: str, requirements: str, db: Session) -> Dict[str, Any]:

@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 
 from app.core.config import settings
 from app.utils.helpers import logger, ExternalApiTimer
+from app.providers.provider_manager import provider_manager
 
 
 class IntentRouterService:
@@ -14,7 +15,6 @@ class IntentRouterService:
     """
 
     def __init__(self) -> None:
-        self.openai_api_key = settings.OPENAI_API_KEY
         try:
             # Optional LangChain import
             from langchain_core.prompts import ChatPromptTemplate  # type: ignore
@@ -51,44 +51,29 @@ class IntentRouterService:
     def answer_general_query(self, query: str) -> str:
         """Answer general queries directly via LLM, bypassing peptide flow."""
         try:
-            if not self.openai_api_key:
-                return "Hello! How can I help you today?"
-
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json",
-            }
             system_prompt = (
                 "You are a concise helpful assistant. If the user greets, reply briefly. "
                 "Avoid mentioning peptides unless asked. Plain text only."
             )
-            payload = {
-                "model": "gpt-4o",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 150,
-            }
-            with ExternalApiTimer("openai", operation="chat.completions") as t:
-                resp = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=20,
-                )
-                t.set_status(status_code=resp.status_code, success=(resp.status_code == 200))
-            if resp.status_code == 200:
-                data = resp.json()
-                try:
-                    return data["choices"][0]["message"]["content"].strip()
-                except Exception:
-                    return "Hello!"
-            return "Hello!"
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query}
+            ]
+
+            response = provider_manager.openai.generate_chat_completion(
+                messages=messages,
+                model="gpt-4o",
+                temperature=0.3,
+                max_tokens=150,
+                timeout=20
+            )
+            
+            return response.strip()
+            
         except Exception as e:
-            logger.warning(f"General answer generation failed: {str(e)}")
-            return "Hello!"
+            logger.warning(f"General query failed: {str(e)}")
+            return "Hello! How can I help you today?"
 
     # ----------------------------
     # Internal helpers
@@ -118,7 +103,7 @@ class IntentRouterService:
             )),
             ("user", "{query}")
         ])
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.0, openai_api_key=self.openai_api_key)
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.0, openai_api_key=provider_manager.openai.api_key)
         chain = prompt | llm
         res = chain.invoke({"query": query})
         text = getattr(res, "content", "{}")

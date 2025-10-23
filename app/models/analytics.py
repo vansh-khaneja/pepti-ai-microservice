@@ -1,9 +1,11 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, Float, Date, Boolean, CheckConstraint, Numeric
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, date
+import uuid
 
 class EndpointUsage(Base):
     """Model to track endpoint usage analytics"""
@@ -66,6 +68,11 @@ class ExternalApiUsage(Base):
     request_bytes = Column(Integer, nullable=True)
     response_bytes = Column(Integer, nullable=True)
     meta = Column('metadata', JSON, nullable=True)
+    # Cost tracking fields
+    cost_usd = Column(Numeric(10, 6), nullable=True, default=0.0)  # Cost in USD (up to $999,999.999999)
+    input_tokens = Column(Integer, nullable=True)  # Input tokens for OpenAI
+    output_tokens = Column(Integer, nullable=True)  # Output tokens for OpenAI
+    pricing_model = Column(String(50), nullable=True)  # e.g., "gpt-4o", "text-embedding-3-large", "per-request"
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -78,6 +85,11 @@ class ExternalApiUsageCreate(BaseModel):
     request_bytes: Optional[int] = None
     response_bytes: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
+    # Cost tracking fields
+    cost_usd: Optional[float] = 0.0
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    pricing_model: Optional[str] = None
 
 
 class ExternalApiUsageSummary(BaseModel):
@@ -86,3 +98,9 @@ class ExternalApiUsageSummary(BaseModel):
     successes: int
     failures: int
     avg_latency_ms: Optional[float] = None
+    # Cost tracking fields
+    total_cost_usd: Optional[float] = 0.0
+    avg_cost_per_call: Optional[float] = 0.0
+    total_input_tokens: Optional[int] = 0
+    total_output_tokens: Optional[int] = 0
+

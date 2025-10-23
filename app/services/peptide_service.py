@@ -2,20 +2,20 @@ import requests
 import logging
 from typing import List, Dict, Any
 from app.models.peptide import PeptideCreate, PeptidePayload, PeptideChemicalInfo
-from app.services.qdrant_service import QdrantService
 from app.services.chat_restriction_service import ChatRestrictionService
 from app.core.config import settings
 from app.core.database import get_db
-from app.utils.helpers import logger
+from app.utils.helpers import logger, ExternalApiTimer
+from app.providers.provider_manager import provider_manager
+from app.repositories import repository_manager
 
 class PeptideService:
     def __init__(self):
-        """Initialize peptide service with lazy Qdrant usage for OpenAI-only endpoints"""
-        self.qdrant_service: QdrantService | None = None
-        self.openai_api_key = settings.OPENAI_API_KEY
+        """Initialize peptide service with repository pattern"""
+        pass
 
     def create_peptide(self, peptide_data: PeptideCreate) -> Dict[str, Any]:
-        """Create a new peptide entry in Qdrant"""
+        """Create a new peptide entry using vector store repository"""
         try:
             logger.info(f"Creating peptide: {peptide_data.name}")
             
@@ -30,9 +30,20 @@ class PeptideService:
             # Generate embedding for the peptide text
             embedding = self._generate_embedding(peptide_payload.to_text())
             
-            # Ensure Qdrant and store
-            self._ensure_qdrant()
-            point_id = self.qdrant_service.store_peptide(peptide_payload, embedding)  # type: ignore[attr-defined]
+            # Store using vector store repository
+            vector_repo = repository_manager.vector_store
+            entity = {
+                "name": peptide_payload.name,
+                "overview": peptide_payload.overview,
+                "mechanism_of_actions": peptide_payload.mechanism_of_actions,
+                "potential_research_fields": peptide_payload.potential_research_fields,
+                "created_at": peptide_payload.created_at.isoformat(),
+                "text_content": peptide_payload.to_text(),
+                "vector": embedding
+            }
+            
+            result = vector_repo.create(entity)
+            point_id = result["id"]
             
             logger.info(f"Peptide '{peptide_data.name}' created successfully with ID: {point_id}")
             
@@ -46,27 +57,21 @@ class PeptideService:
             raise
 
     def update_peptide(self, original_name: str, peptide_data: PeptideCreate) -> Dict[str, Any]:
-        """Update an existing peptide by deleting old entry and creating a new one.
-
-        We delete the peptide by its original name from Qdrant, then insert a new
-        entry using the provided `peptide_data` (which may include a new name and
-        updated fields). Embedding is regenerated from updated text.
-        """
+        """Update an existing peptide using vector store repository"""
         try:
             logger.info(f"Updating peptide '{original_name}' -> '{peptide_data.name}'")
 
-            self._ensure_qdrant()
-            # Delete old entry if it exists (ignore if not found)
+            vector_repo = repository_manager.vector_store
+            
+            # Delete old entry if it exists
             try:
-                deleted = self.qdrant_service.delete_peptide(original_name)  # type: ignore[attr-defined]
+                deleted = vector_repo.delete_by_name(original_name)
                 if deleted:
                     logger.info(f"Deleted old peptide entry: {original_name}")
                 else:
                     logger.warning(f"Old peptide '{original_name}' not found; proceeding to create new entry")
             except Exception as e:
-                # Don't fail the whole update on delete error; surface error
                 logger.warning(f"Delete during update failed for '{original_name}': {str(e)}")
-                # Continue to create the new entry regardless
 
             # Create payload from updated data
             peptide_payload = PeptidePayload(
@@ -78,7 +83,18 @@ class PeptideService:
 
             # Generate fresh embedding and store
             embedding = self._generate_embedding(peptide_payload.to_text())
-            point_id = self.qdrant_service.store_peptide(peptide_payload, embedding)  # type: ignore[attr-defined]
+            entity = {
+                "name": peptide_payload.name,
+                "overview": peptide_payload.overview,
+                "mechanism_of_actions": peptide_payload.mechanism_of_actions,
+                "potential_research_fields": peptide_payload.potential_research_fields,
+                "created_at": peptide_payload.created_at.isoformat(),
+                "text_content": peptide_payload.to_text(),
+                "vector": embedding
+            }
+            
+            result = vector_repo.create(entity)
+            point_id = result["id"]
 
             logger.info(f"Peptide updated. New name='{peptide_data.name}', point_id='{point_id}'")
             return {
@@ -90,38 +106,9 @@ class PeptideService:
             raise
 
     def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI API"""
+        """Generate embedding using OpenAI API via provider"""
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-            
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "input": text,
-                "model": "text-embedding-3-large"
-            }
-            
-            response = requests.post(
-                "https://api.openai.com/v1/embeddings",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                embedding = data["data"][0]["embedding"]
-                # Use full embedding size from model (expected 3072 for text-embedding-3-large)
-                logger.info(f"Generated embedding successfully for text length {len(text)}, dimensions: {len(embedding)}")
-                return embedding
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                raise Exception(f"Failed to generate embedding: {response.status_code}")
-                
+            return provider_manager.openai.generate_embedding(text)
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
             raise
@@ -129,14 +116,6 @@ class PeptideService:
     def _generate_llm_response(self, peptide_context: str, user_query: str, peptide_name: str) -> str:
         """Generate LLM response using peptide context"""
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-            
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-            
             # Get chat restrictions
             restrictions_text = self._get_chat_restrictions()
             
@@ -173,46 +152,17 @@ class PeptideService:
             # Combine system and user prompts for Responses API
             full_input = f"{system_prompt}\n\n{user_prompt}"
             
-            payload = {
-                "model": "gpt-4o",
-                "input": full_input,
-                "temperature": 0.3,
-                "max_output_tokens": 400  # Reduced to ensure under 1000 characters
-            }
-            
-            response = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=payload,
-                timeout=45
+            response = provider_manager.openai.generate_response(
+                input_text=full_input,
+                model="gpt-4o",
+                temperature=0.3,
+                max_output_tokens=400
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                # Parse Responses API response format
-                if data.get("status") == "completed" and "output" in data:
-                    # Extract text from the output array
-                    output_text = ""
-                    for output_item in data["output"]:
-                        if output_item.get("type") == "message" and "content" in output_item:
-                            for content_item in output_item["content"]:
-                                if content_item.get("type") == "output_text" and "text" in content_item:
-                                    output_text += content_item["text"]
-                    
-                    if output_text.strip():
-                        # Clean up the response to ensure it's plain text and under 1000 characters
-                        cleaned_response = self._clean_llm_response(output_text.strip())
-                        logger.info(f"Generated LLM response successfully for peptide: {peptide_name}")
-                        return cleaned_response
-                    else:
-                        logger.error("No text found in Responses API output")
-                        raise Exception("No response generated from Responses API")
-                else:
-                    logger.error(f"OpenAI Responses API returned unexpected status: {data.get('status')}")
-                    raise Exception(f"Unexpected response status: {data.get('status')}")
-            else:
-                logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                raise Exception(f"Failed to generate LLM response: {response.status_code}")
+            # Clean up the response to ensure it's plain text and under 1000 characters
+            cleaned_response = self._clean_llm_response(response)
+            logger.info(f"Generated LLM response successfully for peptide: {peptide_name}")
+            return cleaned_response
                 
         except Exception as e:
             logger.error(f"Error generating LLM response: {str(e)}")
@@ -247,24 +197,15 @@ class PeptideService:
         
         return cleaned
 
-    def _ensure_qdrant(self) -> None:
-        """Lazily initialize Qdrant service and ensure index once."""
-        if self.qdrant_service is None:
-            try:
-                # QdrantService.__init__ already ensures collection and (once per process) name index as needed.
-                self.qdrant_service = QdrantService()
-            except Exception as e:
-                logger.error(f"Failed to initialize Qdrant service: {str(e)}")
-                raise
 
     def query_peptide(self, peptide_name: str, user_query: str) -> Dict[str, Any]:
         """Query a peptide using LLM with the peptide data as context, with LLM judge and Tavily fallback"""
         try:
             logger.info(f"Querying peptide: {peptide_name} with question: {user_query}")
             
-            # Get peptide data from Qdrant
-            self._ensure_qdrant()
-            peptide_data = self.qdrant_service.get_peptide_by_name(peptide_name)  # type: ignore[attr-defined]
+            # Get peptide data from vector store repository
+            vector_repo = repository_manager.vector_store
+            peptide_data = vector_repo.get_by_name(peptide_name)
             
             if not peptide_data:
                 # Peptide not found in DB; use Tavily fallback
@@ -280,7 +221,7 @@ class PeptideService:
                 }
             
             # Extract the text content for LLM context
-            text_content = peptide_data["payload"]["text_content"]
+            text_content = peptide_data["text_content"]
             
             # Always use LLM judge for peptide-specific queries to ensure relevance
             logger.info(f"Invoking LLM judge for peptide-specific query: {peptide_name}")
@@ -313,12 +254,11 @@ class PeptideService:
             raise
 
     def delete_peptide(self, peptide_name: str) -> bool:
-        """Delete a peptide by name"""
+        """Delete a peptide by name using vector store repository"""
         try:
             logger.info(f"Deleting peptide: {peptide_name}")
-            # Ensure Qdrant client is initialized before deletion
-            self._ensure_qdrant()
-            success = self.qdrant_service.delete_peptide(peptide_name)
+            vector_repo = repository_manager.vector_store
+            success = vector_repo.delete_by_name(peptide_name)
             
             if success:
                 logger.info(f"Peptide {peptide_name} deleted successfully")
@@ -339,9 +279,9 @@ class PeptideService:
             # Generate embedding for the search query
             query_embedding = self._generate_embedding(query)
             
-            # Search for the most similar peptide in Qdrant
-            self._ensure_qdrant()
-            search_result = self.qdrant_service.search_peptides(query_embedding, limit=1)  # type: ignore[attr-defined]
+            # Search for the most similar peptide using vector store repository
+            vector_repo = repository_manager.vector_store
+            search_result = vector_repo.search_similar(query_embedding, limit=1)
             
             if not search_result:
                 # No candidates; go directly to Tavily fallback path
@@ -358,9 +298,9 @@ class PeptideService:
             
             # Get the best match
             best_match = search_result[0]
-            peptide_name = best_match["payload"]["name"]
+            peptide_name = best_match["name"]
             similarity_score = best_match["score"]
-            peptide_context = best_match["payload"]["text_content"]
+            peptide_context = best_match["text_content"]
             
             logger.info(f"Found best matching peptide: {peptide_name} with score: {similarity_score}")
 
@@ -435,54 +375,7 @@ class PeptideService:
     def _judge_relevance_yes_no(self, user_query: str, candidate_content: str, peptide_name: str | None) -> bool:
         """Ask LLM to judge if candidate_content is relevant to user_query; expect 'Yes' or 'No'"""
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-
-            name_hint = peptide_name or "the peptide"
-            system_prompt = (
-                "You are a strict binary relevance judge. "
-                "Given a user query and candidate content, respond with exactly one word: Yes or No. "
-                "Say Yes only if the content directly helps answer the query about the specified peptide/topic."
-            )
-            user_prompt = (
-                f"Query about {name_hint}: {user_query}\n\n"
-                f"Candidate Content:\n{candidate_content}\n\n"
-                "Answer with only one word: Yes or No"
-            )
-
-            payload = {
-                "model": "gpt-4o",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.0,
-                "max_tokens": 2
-            }
-
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=20
-            )
-            if response.status_code == 200:
-                data = response.json()
-                text = ""
-                try:
-                    text = data["choices"][0]["message"]["content"].strip()
-                except Exception:
-                    pass
-                normalized = text.lower()
-                return normalized.startswith("yes")
-            else:
-                logger.warning(f"LLM judge API error: {response.status_code} - {response.text}")
-                return False
+            return provider_manager.openai.judge_relevance(user_query, candidate_content, peptide_name)
         except Exception as e:
             logger.warning(f"Judge relevance failed: {str(e)}")
             return False
@@ -503,13 +396,21 @@ class PeptideService:
                 return [], 0.0
 
             client = TavilyClient(api_key=api_key)
-            result = client.search(
-                query=query,
-                search_depth="advanced",
-                include_answer=True,
-                include_images=False,
-                max_results=5
-            )
+            
+            with ExternalApiTimer("tavily", operation="search", metadata={
+                "query": query, 
+                "max_results": 5,
+                "search_depth": "advanced",
+                "search_type": "advanced_search"
+            }) as t:
+                result = client.search(
+                    query=query,
+                    search_depth="advanced",
+                    include_answer=True,
+                    include_images=False,
+                    max_results=5
+                )
+                t.set_status(status_code=200, success=True)
 
             contents: List[str] = []
             scores = self._extract_tavily_scores(result)
@@ -540,14 +441,6 @@ class PeptideService:
     def _generate_final_answer_from_content(self, user_query: str, contents: List[str], peptide_name_hint: str | None) -> str:
         """Synthesize a final answer from external contents using LLM"""
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-
             joined = "\n\n".join(contents[:5]) if contents else ""
             name_hint = peptide_name_hint or "the peptide"
             restrictions_text = self._get_chat_restrictions()
@@ -563,32 +456,21 @@ class PeptideService:
                 "Answer in plain text, under 1000 characters."
             )
 
-            payload = {
-                "model": "gpt-4o",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 400
-            }
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
 
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
+            response = provider_manager.openai.generate_chat_completion(
+                messages=messages,
+                model="gpt-4o",
+                temperature=0.3,
+                max_tokens=400,
                 timeout=45
             )
-            if response.status_code == 200:
-                data = response.json()
-                try:
-                    text = data["choices"][0]["message"]["content"].strip()
-                    return self._clean_llm_response(text)
-                except Exception:
-                    return "I could not synthesize an answer from the available content."
-            else:
-                logger.warning(f"Final answer generation error: {response.status_code} - {response.text}")
-                return "I could not generate an answer at this time."
+            
+            return self._clean_llm_response(response)
+            
         except Exception as e:
             logger.warning(f"Generate final answer failed: {str(e)}")
             return "I could not generate an answer at this time."
@@ -618,108 +500,21 @@ class PeptideService:
         Returns a plain string or None. The prompt enforces returning ONLY the requested field.
         """
         try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-
-            rules = (
-                "You MUST return ONLY the value for the requested field in plain text."
-                " No labels, no extra words, no units unless the field requires it,"
-                " no punctuation beyond what is part of the value."
-            )
-
-            if field == "sequence":
-                requirement = (
-                    "Return ONLY the sequence for this entity."
-                )
-            elif field == "chemical_formula":
-                requirement = (
-                    "Return ONLY the chemical formula (e.g., C38H68N10O14)."
-                )
-            elif field == "molecular_mass":
-                requirement = (
-                    "Return ONLY the molecular mass with units 'g/mol' (e.g., 973.13 g/mol)."
-                    
-                )
-            elif field == "iupac_name":
-                requirement = (
-                    "Return ONLY the IUPAC or systematic name."
-                )
-            else:
-                raise ValueError("Unsupported field")
-
-            system_prompt = (
-                "You are a precise extractor for peptide chemical data. "
-                + rules
-            )
-            user_prompt = (
-                f"Peptide name: {peptide_name}\nRequested field: {field}\n"
-                f"Instruction: {requirement}"
-            )
-
-            payload = {
-                "model": "gpt-4.1-2025-04-14",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_completion_tokens": 120
-            }
-
-            # Log intent (debug level to avoid noise)
-            logger.debug(f"Generating chemical field: field='{field}', peptide='{peptide_name}'")
-
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            if response.status_code == 200:
-                data = response.json()
-                try:
-                    text = data["choices"][0]["message"]["content"].strip()
-                    if not text:
-                        logger.warning(
-                            f"OpenAI returned empty content for field='{field}', peptide='{peptide_name}'"
-                        )
-                    return text
-                except Exception as parse_err:
-                    logger.warning(
-                        f"Failed to parse OpenAI response for field='{field}', peptide='{peptide_name}': {parse_err}. Raw: {data}"
-                    )
-                    return ""
-            else:
-                try:
-                    body = response.text
-                except Exception:
-                    body = "<no-body>"
-                logger.error(
-                    f"OpenAI API error while generating field='{field}', peptide='{peptide_name}': "
-                    f"status={response.status_code}, body={body}"
-                )
-                return ""
+            return provider_manager.openai.generate_chemical_field(peptide_name, field)
         except Exception as e:
-            logger.error(
-                f"Unhandled error generating chemical field '{field}' for '{peptide_name}': {str(e)}",
-                exc_info=True
-            )
+            logger.error(f"Unhandled error generating chemical field '{field}' for '{peptide_name}': {str(e)}")
             return ""
 
     # Note: No regex parsing/validation; we return only what the LLM provides or empty fields
 
     def find_similar_peptides(self, peptide_name: str, top_k: int = 4) -> List[Dict[str, Any]]:
-        """Find similar peptides based on vector similarity"""
+        """Find similar peptides based on vector similarity using vector store repository"""
         try:
             logger.info(f"Finding similar peptides for: {peptide_name}")
             
             # First, get the target peptide to extract its embeddings
-            self._ensure_qdrant()
-            target_peptide = self.qdrant_service.get_peptide_by_name(peptide_name)  # type: ignore[attr-defined]
+            vector_repo = repository_manager.vector_store
+            target_peptide = vector_repo.get_by_name(peptide_name)
             
             if not target_peptide:
                 raise ValueError(f"Peptide '{peptide_name}' not found")
@@ -728,16 +523,16 @@ class PeptideService:
             target_embedding = target_peptide["vector"]
             
             # Search for similar peptides using the target's embeddings
-            similar_results = self.qdrant_service.search_peptides(target_embedding, limit=top_k + 1)  # type: ignore[attr-defined]  # +1 to exclude self
+            similar_results = vector_repo.search_similar(target_embedding, limit=top_k + 1)
             
             # Filter out the target peptide itself and format results
             similar_peptides = []
             for result in similar_results:
-                result_name = result["payload"]["name"]
+                result_name = result["name"]
                 if result_name != peptide_name:  # Exclude the target peptide
                     similar_peptides.append({
                         "name": result_name,
-                        "overview": result["payload"]["overview"],
+                        "overview": result["overview"],
                         "similarity_score": round(result["score"], 6)
                     })
                     
