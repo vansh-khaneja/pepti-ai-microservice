@@ -291,6 +291,6 @@ Thumbs.db
 # Application specific
 uploads/
 downloads/
-cache/
+# cache/  # Commented out to allow app/repositories/cache/ directory
 static/
 media/
