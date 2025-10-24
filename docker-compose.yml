@@ -14,13 +14,22 @@ services:
       QDRANT_URL: ${QDRANT_URL}
       QDRANT_API_KEY: ${QDRANT_API_KEY}
       PEPTIDE_COLLECTION: ${PEPTIDE_COLLECTION:-peptides}
+      PRODUCT_COLLECTION: ${PRODUCT_COLLECTION:-products}
+      FAQ_COLLECTION: ${FAQ_COLLECTION:-faqs}
+      
+      # Redis settings
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379}
+      REDIS_DB: ${REDIS_DB:-0}
+      CACHE_TTL: ${CACHE_TTL:-3600}
       
       # API Keys (set these in .env file)
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SERP_API_KEY: ${SERP_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
       
       # Search settings
       CONFIDENCE_SCORE: ${CONFIDENCE_SCORE:-70}
+      MIN_VECTOR_SIMILARITY: ${MIN_VECTOR_SIMILARITY:-0.35}
       
       # Server settings
       HOST: 0.0.0.0

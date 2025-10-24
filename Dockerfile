@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # Copy application code
 COPY app/ ./app/
+COPY alembic.ini .
+COPY migrate_db.py .
+COPY alembic/ ./alembic/
 COPY README.md .
 
 # Create non-root user for security
