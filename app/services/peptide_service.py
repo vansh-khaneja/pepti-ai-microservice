@@ -1,5 +1,6 @@
 import requests
 import logging
+import hashlib
 from typing import List, Dict, Any
 from app.models.peptide import PeptideCreate, PeptidePayload, PeptideChemicalInfo
 from app.services.chat_restriction_service import ChatRestrictionService
@@ -106,51 +107,90 @@ class PeptideService:
             raise
 
     def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI API via provider"""
+        """Generate embedding using OpenAI API via provider, with caching"""
         try:
-            return provider_manager.openai.generate_embedding(text)
+            cache_repo = None
+            embedding_cache_key = None
+            
+            # Check cache for embedding first (only if cache is available)
+            try:
+                cache_repo = repository_manager.cache
+                if cache_repo and cache_repo.redis_client:
+                    normalized_text = text.lower().strip()
+                    embedding_cache_key = f"embedding:{hashlib.md5(normalized_text.encode()).hexdigest()}"
+                    
+                    cached_data = cache_repo.get_by_id(embedding_cache_key)
+                    if cached_data:
+                        embedding = cached_data.get("embedding") or cached_data.get("data", {}).get("embedding")
+                        if embedding:
+                            logger.debug(f"Embedding cache HIT for text length: {len(text)}")
+                            return embedding
+            except Exception as cache_error:
+                logger.debug(f"Embedding cache check failed (non-critical): {str(cache_error)}")
+            
+            # Generate new embedding
+            logger.debug(f"Embedding cache MISS, generating new embedding for text length: {len(text)}")
+            embedding = provider_manager.openai.generate_embedding(text)
+            
+            # Cache the embedding (longer TTL since embeddings don't change)
+            if cache_repo and embedding_cache_key:
+                try:
+                    if cache_repo.redis_client:
+                        cache_repo.create({
+                            "key": embedding_cache_key,
+                            "data": {"embedding": embedding, "text_length": len(text)},
+                            "ttl": 86400 * 7  # Cache for 7 days
+                        })
+                except Exception as cache_error:
+                    logger.debug(f"Embedding cache write failed (non-critical): {str(cache_error)}")
+            
+            return embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
             raise
 
-    def _generate_llm_response(self, peptide_context: str, user_query: str, peptide_name: str) -> str:
-        """Generate LLM response using peptide context"""
+    def _generate_llm_response(self, peptide_data: Dict[str, Any], user_query: str, peptide_name: str) -> str:
+        """Generate LLM response using embedding_text from payload"""
         try:
+            # Get embedding_text from payload, fallback to text_content if not available
+            embedding_text = peptide_data.get("embedding_text")
+            text_content = peptide_data.get("text_content")
+            
+            if embedding_text:
+                context = embedding_text
+                context_source = "embedding_text"
+                logger.debug(f"Using embedding_text for LLM context (length: {len(context)})")
+            elif text_content:
+                context = text_content
+                context_source = "text_content"
+                logger.debug(f"Using text_content for LLM context (length: {len(context)})")
+            else:
+                context = ""
+                context_source = "empty"
+                logger.warning(f"No embedding_text or text_content found in payload for {peptide_name}. Available keys: {list(peptide_data.keys())}")
+            
+            logger.info(f"Generating LLM response for peptide '{peptide_name}' using context source: {context_source}, context length: {len(context)}")
+            
             # Get chat restrictions
             restrictions_text = self._get_chat_restrictions()
+            has_restrictions = bool(restrictions_text)
+            logger.debug(f"Chat restrictions {'found' if has_restrictions else 'not found'}")
             
-            # Create a focused prompt for the specific peptide
-            system_prompt = f"""You are a helpful assistant specializing in peptide research and information.
+            # Short and crisp prompt
+            system_prompt = f"""You are a peptide research assistant. Answer based on the provided context. Keep responses short, clear, and under 1000 characters. Plain text only, no markdown.{restrictions_text}"""
             
-            CRITICAL INSTRUCTIONS:
-            1. If the user asks basic greetings (hi, hello, how are you) or general questions NOT about peptides, answer simply and briefly without using any peptide context.
-            
-            2. If the user asks about a DIFFERENT peptide than {peptide_name}, respond with: "I don't have information about that specific peptide."
-            
-            3. If the user asks about {peptide_name} but the question is vague or unclear, ask them to be more specific about what they want to know (uses, mechanism, research fields, etc.).
-            
-            4. ONLY use the provided peptide information when the user asks SPECIFIC questions about {peptide_name}.
-            
-            5. Answer precisely and concisely. If asked about "uses", only mention uses. If asked about "mechanism", only mention mechanism.
-            
-            IMPORTANT FORMATTING REQUIREMENTS:
-            - Write in plain text only, NO markdown formatting
-            - Use normal paragraphs with proper spacing
-            - Keep response under 1000 characters
-            - Be direct and to the point
-            
-            {restrictions_text}"""
-            
-            user_prompt = f"""Peptide Information for {peptide_name}:
-            {peptide_context}
-            
-            User Question: {user_query}
-            
-            Please provide a clear, accurate answer based on the peptide information above.
-            Remember: plain text only, no markdown, under 1000 characters, normal paragraphs."""
+            # Simple format: query and context
+            user_prompt = f"""Query: {user_query}
+
+Context:
+{context}
+
+Provide a concise answer based on the context above."""
             
             # Combine system and user prompts for Responses API
             full_input = f"{system_prompt}\n\n{user_prompt}"
+            total_input_length = len(full_input)
+            logger.debug(f"LLM input length: {total_input_length} characters")
             
             response = provider_manager.openai.generate_response(
                 input_text=full_input,
@@ -159,13 +199,16 @@ class PeptideService:
                 max_output_tokens=400
             )
             
+            logger.debug(f"Raw LLM response length: {len(response)} characters")
+            
             # Clean up the response to ensure it's plain text and under 1000 characters
             cleaned_response = self._clean_llm_response(response)
-            logger.info(f"Generated LLM response successfully for peptide: {peptide_name}")
+            final_length = len(cleaned_response)
+            logger.info(f"Generated LLM response successfully for peptide: {peptide_name}, final length: {final_length} chars, context source: {context_source}")
             return cleaned_response
                 
         except Exception as e:
-            logger.error(f"Error generating LLM response: {str(e)}")
+            logger.error(f"Error generating LLM response for peptide '{peptide_name}': {str(e)}", exc_info=True)
             raise
 
     def _clean_llm_response(self, response: str) -> str:
@@ -201,16 +244,18 @@ class PeptideService:
     def query_peptide(self, peptide_name: str, user_query: str) -> Dict[str, Any]:
         """Query a peptide using LLM with the peptide data as context, with LLM judge and Tavily fallback"""
         try:
-            logger.info(f"Querying peptide: {peptide_name} with question: {user_query}")
+            logger.info(f"Querying peptide: '{peptide_name}' with question: '{user_query[:100]}...' (query length: {len(user_query)})")
             
             # Get peptide data from vector store repository
             vector_repo = repository_manager.vector_store
+            logger.debug(f"Fetching peptide data from Qdrant for: {peptide_name}")
             peptide_data = vector_repo.get_by_name(peptide_name)
             
             if not peptide_data:
                 # Peptide not found in DB; use Tavily fallback
-                logger.warning(f"Peptide '{peptide_name}' not found in database; invoking Tavily fallback")
+                logger.warning(f"Peptide '{peptide_name}' not found in Qdrant database; invoking Tavily fallback")
                 tavily_content, tavily_score = self._tavily_fetch_content(f"{peptide_name} {user_query}")
+                logger.info(f"Tavily search returned {len(tavily_content)} content chunks with score: {tavily_score}")
                 answer = self._generate_final_answer_from_content(user_query, tavily_content, peptide_name_hint=peptide_name)
                 return {
                     "llm_response": answer,
@@ -220,16 +265,39 @@ class PeptideService:
                     "source": "tavily"
                 }
             
-            # Extract the text content for LLM context
-            text_content = peptide_data["text_content"]
+            available_keys = list(peptide_data.keys())
+            logger.debug(f"Peptide data retrieved. Available keys: {available_keys}")
+            
+            # Extract context for judge (embedding_text, text_content, or construct from fields)
+            embedding_text = peptide_data.get("embedding_text")
+            text_content_field = peptide_data.get("text_content")
+            
+            if embedding_text:
+                text_content = embedding_text
+                context_source = "embedding_text"
+                logger.debug(f"Using embedding_text for judge (length: {len(text_content)})")
+            elif text_content_field:
+                text_content = text_content_field
+                context_source = "text_content"
+                logger.debug(f"Using text_content for judge (length: {len(text_content)})")
+            else:
+                # Construct from individual fields
+                overview = peptide_data.get('overview', '')
+                mechanism = peptide_data.get('mechanism_of_actions', '')
+                research_fields = peptide_data.get('potential_research_fields', '')
+                text_content = f"name: {peptide_name} overview: {overview} mechanism of actions: {mechanism} potential research fields: {research_fields}"
+                context_source = "constructed_from_fields"
+                logger.warning(f"No embedding_text or text_content found. Constructed context from individual fields. Available keys: {list(peptide_data.keys())}")
+            
+            logger.info(f"Querying peptide '{peptide_name}': user_query='{user_query[:100]}...', context_source={context_source}, context_length={len(text_content)}")
             
             # Always use LLM judge for peptide-specific queries to ensure relevance
             logger.info(f"Invoking LLM judge for peptide-specific query: {peptide_name}")
             judge_yes = self._judge_relevance_yes_no(user_query, text_content, peptide_name)
             
             if judge_yes:
-                logger.info("Judge said YES; using stored peptide context")
-                llm_response = self._generate_llm_response(text_content, user_query, peptide_name)
+                logger.info(f"Judge said YES for '{peptide_name}'; using stored peptide context from {context_source}")
+                llm_response = self._generate_llm_response(peptide_data, user_query, peptide_name)
                 return {
                     "llm_response": llm_response,
                     "peptide_name": peptide_name,
@@ -238,8 +306,9 @@ class PeptideService:
                     "source": "qdrant+judge"
                 }
             else:
-                logger.info("Judge said NO; falling back to Tavily search")
+                logger.info(f"Judge said NO for '{peptide_name}'; falling back to Tavily search")
                 tavily_content, tavily_score = self._tavily_fetch_content(f"{peptide_name} {user_query}")
+                logger.info(f"Tavily search returned {len(tavily_content)} content chunks with score: {tavily_score}")
                 answer = self._generate_final_answer_from_content(user_query, tavily_content, peptide_name_hint=peptide_name)
                 return {
                     "llm_response": answer,
@@ -274,19 +343,24 @@ class PeptideService:
     def search_and_answer(self, query: str) -> Dict[str, Any]:
         """Search for peptides using vector similarity and answer queries with LLM-judge and Tavily fallback"""
         try:
-            logger.info(f"Searching peptides with query: {query}")
+            logger.info(f"Starting search_and_answer for query: '{query[:100]}...' (length: {len(query)})")
             
             # Generate embedding for the search query
+            logger.debug("Generating embedding for search query")
             query_embedding = self._generate_embedding(query)
+            logger.debug(f"Generated embedding with {len(query_embedding)} dimensions")
             
             # Search for the most similar peptide using vector store repository
             vector_repo = repository_manager.vector_store
+            logger.debug("Searching Qdrant for similar peptides")
             search_result = vector_repo.search_similar(query_embedding, limit=1)
+            logger.info(f"Qdrant search returned {len(search_result)} result(s)")
             
             if not search_result:
                 # No candidates; go directly to Tavily fallback path
-                logger.warning("No peptides found; invoking Tavily fallback")
+                logger.warning("No peptides found in Qdrant; invoking Tavily fallback")
                 tavily_content, tavily_score = self._tavily_fetch_content(query)
+                logger.info(f"Tavily search returned {len(tavily_content)} content chunks with score: {tavily_score}")
                 answer = self._generate_final_answer_from_content(query, tavily_content, peptide_name_hint=None)
                 return {
                     "llm_response": answer,
@@ -298,21 +372,60 @@ class PeptideService:
             
             # Get the best match
             best_match = search_result[0]
-            peptide_name = best_match["name"]
-            similarity_score = best_match["score"]
-            peptide_context = best_match["text_content"]
+            peptide_name = best_match.get("name", "Unknown")
+            similarity_score = best_match.get("score")
+            available_keys = list(best_match.keys())
+            logger.info(f"Best match found: peptide_name='{peptide_name}', similarity_score={similarity_score}, available_keys={available_keys}")
             
-            logger.info(f"Found best matching peptide: {peptide_name} with score: {similarity_score}")
+            # Get context for judge and return value (embedding_text, text_content, or construct from fields)
+            embedding_text = best_match.get("embedding_text")
+            text_content_field = best_match.get("text_content")
+            
+            if embedding_text:
+                peptide_context = embedding_text
+                context_source = "embedding_text"
+                logger.debug(f"Using embedding_text for context (length: {len(peptide_context)})")
+            elif text_content_field:
+                peptide_context = text_content_field
+                context_source = "text_content"
+                logger.debug(f"Using text_content for context (length: {len(peptide_context)})")
+            else:
+                # Construct from individual fields
+                overview = best_match.get('overview', '')
+                mechanism = best_match.get('mechanism_of_actions', '')
+                research_fields = best_match.get('potential_research_fields', '')
+                peptide_context = f"name: {peptide_name} overview: {overview} mechanism of actions: {mechanism} potential research fields: {research_fields}"
+                context_source = "constructed_from_fields"
+                logger.warning(f"No embedding_text or text_content in payload. Constructed from fields. Available keys: {available_keys}")
+            
+            logger.info(f"Context source: {context_source}, context length: {len(peptide_context)}")
 
             # If below similarity threshold, ask LLM judge if the context is relevant
             from app.core.config import settings
             threshold = settings.MIN_VECTOR_SIMILARITY
+            high_confidence_threshold = 0.7  # Skip judge for very high similarity
+            logger.debug(f"Similarity threshold: {threshold}, high confidence: {high_confidence_threshold}, current score: {similarity_score}")
+            
+            # Skip judge for very high similarity scores (fast path)
+            if similarity_score is not None and similarity_score >= high_confidence_threshold:
+                logger.info(f"High similarity {similarity_score} >= {high_confidence_threshold}; skipping judge, using Qdrant context directly")
+                llm_response = self._generate_llm_response(best_match, query, peptide_name)
+                return {
+                    "llm_response": llm_response,
+                    "peptide_name": peptide_name,
+                    "similarity_score": round(similarity_score, 6),
+                    "peptide_context": peptide_context,
+                    "source": "qdrant"
+                }
+            
             if similarity_score is None or similarity_score < threshold:
                 logger.info(f"Similarity {similarity_score} < threshold {threshold}; invoking LLM judge")
                 judge_yes = self._judge_relevance_yes_no(query, peptide_context, peptide_name)
+                logger.info(f"LLM judge result: {'YES' if judge_yes else 'NO'}")
+                
                 if judge_yes:
-                    logger.info("Judge said YES; using current context")
-                    llm_response = self._generate_llm_response(peptide_context, query, peptide_name)
+                    logger.info(f"Judge said YES; using Qdrant context from {context_source}")
+                    llm_response = self._generate_llm_response(best_match, query, peptide_name)
                     return {
                         "llm_response": llm_response,
                         "peptide_name": peptide_name,
@@ -321,8 +434,9 @@ class PeptideService:
                         "source": "qdrant+judge"
                     }
                 else:
-                    logger.info("Judge said NO; falling back to Tavily search")
+                    logger.info(f"Judge said NO; falling back to Tavily search for '{peptide_name}'")
                     tavily_content, tavily_score = self._tavily_fetch_content(query)
+                    logger.info(f"Tavily search returned {len(tavily_content)} content chunks with score: {tavily_score}")
                     answer = self._generate_final_answer_from_content(query, tavily_content, peptide_name_hint=peptide_name)
                     return {
                         "llm_response": answer,
@@ -333,7 +447,9 @@ class PeptideService:
                     }
 
             # Above threshold: use Qdrant context directly
-            llm_response = self._generate_llm_response(peptide_context, query, peptide_name)
+            logger.info(f"Similarity {similarity_score} >= threshold {threshold}; using Qdrant context directly from {context_source}")
+            llm_response = self._generate_llm_response(best_match, query, peptide_name)
+            logger.info(f"Search completed successfully for '{peptide_name}' with source: qdrant")
             return {
                 "llm_response": llm_response,
                 "peptide_name": peptide_name,
@@ -343,7 +459,7 @@ class PeptideService:
             }
             
         except Exception as e:
-            logger.error(f"Error searching and answering: {str(e)}")
+            logger.error(f"Error searching and answering for query '{query}': {str(e)}", exc_info=True)
             raise
 
     def _get_chat_restrictions(self) -> str:
@@ -375,14 +491,18 @@ class PeptideService:
     def _judge_relevance_yes_no(self, user_query: str, candidate_content: str, peptide_name: str | None) -> bool:
         """Ask LLM to judge if candidate_content is relevant to user_query; expect 'Yes' or 'No'"""
         try:
-            return provider_manager.openai.judge_relevance(user_query, candidate_content, peptide_name)
+            logger.debug(f"Judging relevance: query='{user_query[:100]}...', peptide='{peptide_name}', content_length={len(candidate_content)}")
+            result = provider_manager.openai.judge_relevance(user_query, candidate_content, peptide_name)
+            logger.debug(f"Judge relevance result: {result} for peptide '{peptide_name}'")
+            return result
         except Exception as e:
-            logger.warning(f"Judge relevance failed: {str(e)}")
+            logger.warning(f"Judge relevance failed for peptide '{peptide_name}': {str(e)}", exc_info=True)
             return False
 
     def _tavily_fetch_content(self, query: str) -> tuple[List[str], float]:
         """Fetch content snippets via Tavily search and return content + average score"""
         try:
+            logger.debug(f"Starting Tavily search for query: '{query[:100]}...'")
             from app.core.config import settings
             api_key = settings.TAVILY_API_KEY
             if not api_key:
@@ -396,6 +516,7 @@ class PeptideService:
                 return [], 0.0
 
             client = TavilyClient(api_key=api_key)
+            logger.debug("Tavily client initialized, performing search")
             
             with ExternalApiTimer("tavily", operation="search", metadata={
                 "query": query, 
@@ -415,14 +536,17 @@ class PeptideService:
             contents: List[str] = []
             scores = self._extract_tavily_scores(result)
             average_score = sum(scores) / len(scores) if scores else 0.0
+            logger.debug(f"Tavily search completed: extracted {len(scores)} scores, average: {average_score}")
             
             if isinstance(result, dict) and "results" in result and isinstance(result["results"], list):
                 for item in result["results"]:
                     if isinstance(item, dict) and "content" in item:
                         contents.append(item["content"])
+            
+            logger.info(f"Tavily search returned {len(contents)} content chunks with average score: {average_score:.4f}")
             return contents, average_score
         except Exception as e:
-            logger.warning(f"Tavily search failed: {str(e)}")
+            logger.warning(f"Tavily search failed for query '{query}': {str(e)}", exc_info=True)
             return [], 0.0
 
     def _extract_tavily_scores(self, response: dict) -> List[float]:
@@ -443,6 +567,8 @@ class PeptideService:
         try:
             joined = "\n\n".join(contents[:5]) if contents else ""
             name_hint = peptide_name_hint or "the peptide"
+            logger.debug(f"Generating final answer from {len(contents)} content chunks for '{name_hint}', query length: {len(user_query)}")
+            
             restrictions_text = self._get_chat_restrictions()
             system_prompt = (
                 "You are a helpful assistant specializing in peptide research. "
@@ -461,6 +587,7 @@ class PeptideService:
                 {"role": "user", "content": user_prompt}
             ]
 
+            logger.debug(f"Calling LLM with {len(contents)} content chunks, total context length: {len(joined)}")
             response = provider_manager.openai.generate_chat_completion(
                 messages=messages,
                 model="gpt-4o",
@@ -469,10 +596,12 @@ class PeptideService:
                 timeout=45
             )
             
-            return self._clean_llm_response(response)
+            cleaned = self._clean_llm_response(response)
+            logger.info(f"Generated final answer from external content: length={len(cleaned)} chars for '{name_hint}'")
+            return cleaned
             
         except Exception as e:
-            logger.warning(f"Generate final answer failed: {str(e)}")
+            logger.warning(f"Generate final answer failed for '{peptide_name_hint}': {str(e)}", exc_info=True)
             return "I could not generate an answer at this time."
 
     def get_peptide_chemical_info(self, peptide_name: str) -> PeptideChemicalInfo:

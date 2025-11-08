@@ -11,13 +11,16 @@ class OpenAIProvider(BaseProvider):
     """OpenAI provider for managing all OpenAI API interactions globally."""
     
     def __init__(self, api_key: str):
-        """Initialize OpenAI provider with API key."""
+        """Initialize OpenAI provider with API key and HTTP session for connection pooling."""
         super().__init__(api_key)
         self.base_url = "https://api.openai.com/v1"
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+        # Use session for connection pooling (reuses TCP connections)
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
     
     def generate_embedding(self, text: str, model: str = "text-embedding-3-large") -> List[float]:
         """Generate embedding using OpenAI API."""
@@ -40,9 +43,8 @@ class OpenAIProvider(BaseProvider):
                 "input_tokens": input_tokens,
                 "input_text": text
             }) as t:
-                response = requests.post(
+                response = self.session.post(
                     f"{self.base_url}/embeddings",
-                    headers=self.headers,
                     json=payload,
                     timeout=30
                 )
@@ -108,9 +110,8 @@ class OpenAIProvider(BaseProvider):
                 "input_tokens": input_tokens,
                 "input_text": input_text
             }) as t:
-                response = requests.post(
+                response = self.session.post(
                     f"{self.base_url}/chat/completions",
-                    headers=self.headers,
                     json=payload,
                     timeout=timeout
                 )
@@ -174,9 +175,8 @@ class OpenAIProvider(BaseProvider):
                 "input_tokens": input_tokens,
                 "input_text": input_text
             }) as t:
-                response = requests.post(
+                response = self.session.post(
                     f"{self.base_url}/responses",
-                    headers=self.headers,
                     json=payload,
                     timeout=timeout
                 )

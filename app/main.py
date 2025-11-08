@@ -38,9 +38,18 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "pepti-wiki-ai"}
 
+def _initialize_cost_calculator_background():
+    """Background task to initialize cost calculator"""
+    try:
+        from app.services.cost_calculator import _get_cost_calculator
+        _ = _get_cost_calculator()
+        logger.info("Cost calculator initialized in background")
+    except Exception as e:
+        logger.warning(f"Cost calculator initialization failed (non-critical): {str(e)}")
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup"""
+    """Initialize database on startup, other services in background"""
     try:
         # Set server start time
         from app.core.server_info import set_server_start_time
@@ -54,6 +63,15 @@ async def startup_event():
         )
         init_db()
         logger.info("Database initialized successfully")
+        
+        # Initialize cost calculator in background (non-blocking)
+        import asyncio
+        asyncio.create_task(asyncio.to_thread(_initialize_cost_calculator_background))
+        
+        # Repositories (Redis, Qdrant) will initialize lazily on first access
+        # This allows the app to start quickly even if external services are temporarily unavailable
+        logger.info("Repositories will initialize on first access (lazy initialization)")
+            
     except Exception as e:
         logger.warning(f"Database initialization failed: {str(e)}")
         logger.warning("Analytics functionality will not be available")

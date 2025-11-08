@@ -315,5 +315,18 @@ class CostCalculator:
             return 0.0, f"{provider}-{operation}", None, None
 
 
-# Global instance
-cost_calculator = CostCalculator()
+# Global instance - lazy initialization (initializes on first access, not at import time)
+_cost_calculator_instance = None
+
+def _get_cost_calculator() -> CostCalculator:
+    """Get or create cost calculator instance (lazy initialization)"""
+    global _cost_calculator_instance
+    if _cost_calculator_instance is None:
+        _cost_calculator_instance = CostCalculator()
+    return _cost_calculator_instance
+
+# Use __getattr__ for lazy module-level attribute access
+def __getattr__(name: str):
+    if name == "cost_calculator":
+        return _get_cost_calculator()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
