@@ -71,6 +71,61 @@ async def startup_event():
         # Repositories (Redis, Qdrant) will initialize lazily on first access
         # This allows the app to start quickly even if external services are temporarily unavailable
         logger.info("Repositories will initialize on first access (lazy initialization)")
+        
+        # Initialize and start scheduler for cron jobs
+        try:
+            from app.services.scheduler_service import scheduler_service
+            from app.services import cron_jobs
+            
+            scheduler_service.start()
+            
+            # Register cron jobs
+            # Daily cleanup of old sessions at 2 AM
+            scheduler_service.add_cron_job(
+                cron_jobs.cleanup_old_sessions,
+                cron_expression="0 2 * * *",  # Daily at 2 AM
+                job_id="cleanup_old_sessions"
+            )
+            
+            # Daily analytics aggregation at 1 AM
+            scheduler_service.add_cron_job(
+                cron_jobs.aggregate_daily_analytics,
+                cron_expression="0 1 * * *",  # Daily at 1 AM
+                job_id="aggregate_daily_analytics"
+            )
+            
+            # Weekly cleanup of old analytics on Sunday at 3 AM
+            scheduler_service.add_cron_job(
+                cron_jobs.cleanup_old_analytics,
+                cron_expression="0 3 * * 0",  # Sunday at 3 AM
+                job_id="cleanup_old_analytics"
+            )
+            
+            # Redis cache cleanup every 6 hours
+            scheduler_service.add_interval_job(
+                cron_jobs.cleanup_redis_cache,
+                hours=6,
+                job_id="cleanup_redis_cache"
+            )
+            
+            # Health check every 30 minutes
+            scheduler_service.add_interval_job(
+                cron_jobs.health_check_job,
+                minutes=30,
+                job_id="health_check_job"
+            )
+            
+            # Supabase peptide sync every 6 hours
+            scheduler_service.add_interval_job(
+                cron_jobs.sync_peptides_from_supabase,
+                hours=6,
+                job_id="sync_peptides_from_supabase"
+            )
+            
+            logger.info("✅ All cron jobs registered successfully")
+        except Exception as e:
+            logger.warning(f"Scheduler initialization failed (non-critical): {str(e)}")
+            logger.warning("Cron jobs will not be available, but the application will continue to run")
             
     except Exception as e:
         logger.warning(f"Database initialization failed: {str(e)}")
@@ -81,6 +136,14 @@ async def startup_event():
 async def shutdown_event():
     """Close database connection on shutdown"""
     try:
+        # Shutdown scheduler
+        try:
+            from app.services.scheduler_service import scheduler_service
+            scheduler_service.shutdown()
+        except Exception as e:
+            logger.warning(f"Error shutting down scheduler: {str(e)}")
+        
+        # Close database connection
         close_db()
         logger.info("Database connection closed")
     except Exception as e:

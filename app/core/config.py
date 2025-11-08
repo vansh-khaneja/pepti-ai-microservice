@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     TAVILY_API_KEY: str = ""
     
+    # Supabase settings
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+    
     # Redis settings
     REDIS_URL: str = "redis://localhost:6379"  # Can be overridden with REDIS_URL env var
     REDIS_DB: int = 0  # Can be overridden with REDIS_DB env var
