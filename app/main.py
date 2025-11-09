@@ -108,10 +108,10 @@ async def startup_event():
                 job_id="cleanup_redis_cache"
             )
             
-            # Health check every 30 minutes
+            # Health check every 2 minutes
             scheduler_service.add_interval_job(
                 cron_jobs.health_check_job,
-                minutes=30,
+                minutes=2,
                 job_id="health_check_job"
             )
             

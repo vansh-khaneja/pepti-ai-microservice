@@ -90,7 +90,7 @@ async def aggregate_daily_analytics():
 async def health_check_job():
     """
     Periodic health check job
-    Runs every 30 minutes
+    Runs every 2 minutes
     """
     try:
         logger.info("🏥 Running health check...")
@@ -111,18 +111,22 @@ async def health_check_job():
         # Check Redis connection
         try:
             cache_repo = repository_manager.cache
-            if hasattr(cache_repo, 'ping'):
+            if cache_repo and hasattr(cache_repo, 'ping'):
                 cache_repo.ping()
                 logger.info("✅ Redis health check: OK")
+            else:
+                logger.warning("⚠️ Redis repository not available or ping method missing")
         except Exception as e:
             logger.warning(f"⚠️ Redis health check failed: {e}")
         
         # Check Qdrant connection
         try:
             vector_repo = repository_manager.vector_store
-            if hasattr(vector_repo, 'health_check'):
+            if vector_repo and hasattr(vector_repo, 'health_check'):
                 vector_repo.health_check()
                 logger.info("✅ Qdrant health check: OK")
+            else:
+                logger.warning("⚠️ Qdrant repository not available or health_check method missing")
         except Exception as e:
             logger.warning(f"⚠️ Qdrant health check failed: {e}")
             

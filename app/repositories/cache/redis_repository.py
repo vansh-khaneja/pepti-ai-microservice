@@ -248,3 +248,14 @@ class CacheRepository(BaseRepository[Dict[str, Any]]):
         except Exception as e:
             logger.error(f"Error checking key existence: {str(e)}")
             return False
+    
+    def ping(self) -> bool:
+        """Ping Redis to check connection health."""
+        try:
+            if not self.redis_client:
+                return False
+            
+            return self.redis_client.ping()
+        except Exception as e:
+            logger.error(f"Redis ping failed: {str(e)}")
+            raise

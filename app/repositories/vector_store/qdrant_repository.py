@@ -326,3 +326,13 @@ class VectorStoreRepository(BaseRepository[Dict[str, Any]]):
         except Exception as e:
             logger.error(f"Error getting collection stats: {str(e)}")
             return {}
+    
+    def health_check(self) -> bool:
+        """Check Qdrant connection health by attempting to get collections."""
+        try:
+            # Try to get collections - this will fail if Qdrant is not accessible
+            self.client.get_collections()
+            return True
+        except Exception as e:
+            logger.error(f"Qdrant health check failed: {str(e)}")
+            raise
