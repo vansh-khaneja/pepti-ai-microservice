@@ -22,6 +22,7 @@ class AdminDashboardService:
         Returns:
             Dict containing all dashboard data:
             - chat_restrictions: List of chat restrictions
+            - tavily_toggle: Tavily search toggle setting
             - allowed_urls: List of allowed URLs
             - daily_analytics: Daily usage analytics (7 days)
             - weekly_analytics: Weekly usage analytics (4 weeks)
@@ -34,6 +35,7 @@ class AdminDashboardService:
             # Fetch all data concurrently for better performance
             results = await asyncio.gather(
                 self._get_chat_restrictions(db),
+                self._get_tavily_toggle(db),
                 self._get_allowed_urls(db),
                 self._get_external_daily(db),
                 self._get_external_weekly(db),
@@ -48,21 +50,23 @@ class AdminDashboardService:
             
             # Process results
             chat_restrictions = results[0] if not isinstance(results[0], Exception) else []
-            allowed_urls = results[1] if not isinstance(results[1], Exception) else []
-            external_daily = results[2] if not isinstance(results[2], Exception) else []
-            external_weekly = results[3] if not isinstance(results[3], Exception) else []
-            external_api_summary = results[4] if not isinstance(results[4], Exception) else []
-            external_daily_cost = results[5] if not isinstance(results[5], Exception) else []
-            external_weekly_cost = results[6] if not isinstance(results[6], Exception) else []
-            external_monthly_cost = results[7] if not isinstance(results[7], Exception) else []
-            top_costing_services = results[8] if not isinstance(results[8], Exception) else []
-            cost_summary = results[9] if not isinstance(results[9], Exception) else {}
+            tavily_toggle = results[1] if not isinstance(results[1], Exception) else {"enabled": True}
+            allowed_urls = results[2] if not isinstance(results[2], Exception) else []
+            external_daily = results[3] if not isinstance(results[3], Exception) else []
+            external_weekly = results[4] if not isinstance(results[4], Exception) else []
+            external_api_summary = results[5] if not isinstance(results[5], Exception) else []
+            external_daily_cost = results[6] if not isinstance(results[6], Exception) else []
+            external_weekly_cost = results[7] if not isinstance(results[7], Exception) else []
+            external_monthly_cost = results[8] if not isinstance(results[8], Exception) else []
+            top_costing_services = results[9] if not isinstance(results[9], Exception) else []
+            cost_summary = results[10] if not isinstance(results[10], Exception) else {}
             
             # Log any errors that occurred
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     error_names = [
                         "chat_restrictions",
+                        "tavily_toggle",
                         "allowed_urls",
                         "external_daily",
                         "external_weekly",
@@ -80,6 +84,7 @@ class AdminDashboardService:
             
             return {
                 "chat_restrictions": chat_restrictions,
+                "tavily_toggle": tavily_toggle,
                 "allowed_urls": allowed_urls,
                 "external_daily": external_daily,
                 "external_weekly": external_weekly,
@@ -109,6 +114,22 @@ class AdminDashboardService:
         except Exception as e:
             logger.error(f"Error fetching chat restrictions: {e}")
             return []
+    
+    async def _get_tavily_toggle(self, db: Session) -> Dict[str, Any]:
+        """Get Tavily search toggle setting"""
+        try:
+            from app.services.tavily_toggle_service import TavilyToggleService
+            toggle_service = TavilyToggleService(db)
+            toggle = toggle_service.get_tavily_toggle()
+            return {
+                "id": toggle.id,
+                "enabled": toggle.enabled,
+                "created_at": toggle.created_at,
+                "updated_at": toggle.updated_at
+            }
+        except Exception as e:
+            logger.error(f"Error fetching Tavily toggle: {e}")
+            return {"enabled": True}  # Default to enabled
     
     async def _get_allowed_urls(self, db: Session) -> List[Dict[str, Any]]:
         """Get allowed URLs data"""

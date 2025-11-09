@@ -59,7 +59,7 @@ async def startup_event():
         from app.models import (
             ChatSession, ChatMessage,
             PeptideInfoSession, PeptideInfoMessage,
-            ExternalApiUsage
+            ExternalApiUsage, TavilyToggle
         )
         init_db()
         logger.info("Database initialized successfully")
@@ -115,12 +115,23 @@ async def startup_event():
                 job_id="health_check_job"
             )
             
-            # Supabase peptide sync every 2 minutes (for testing)
+            # Supabase peptide sync every 1 minute
             scheduler_service.add_interval_job(
                 cron_jobs.sync_peptides_from_supabase,
-                minutes=2,
+                minutes=1,
                 job_id="sync_peptides_from_supabase"
             )
+            
+            # Supabase peptide sync every 6 hours (backup/comprehensive sync)
+            scheduler_service.add_interval_job(
+                cron_jobs.sync_peptides_from_supabase_6h,
+                hours=6,
+                job_id="sync_peptides_from_supabase_6h"
+            )
+            
+            # Startup sync verification (runs once at startup in background)
+            import asyncio
+            asyncio.create_task(cron_jobs.startup_sync_peptides())
             
             logger.info("✅ All cron jobs registered successfully")
         except Exception as e:

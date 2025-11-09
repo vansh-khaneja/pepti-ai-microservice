@@ -268,21 +268,68 @@ class VectorStoreRepository(BaseRepository[Dict[str, Any]]):
             logger.error(f"Error deleting peptide: {str(e)}")
             return False
     
-    def delete_by_name(self, name: str) -> bool:
-        """Delete a peptide by name."""
+    def delete_by_names(self, names: set) -> int:
+        """
+        Delete multiple peptides by names. 
+        Uses name-to-ID mapping from scroll (no index required).
+        Returns count of successfully deleted peptides.
+        """
+        if not names:
+            return 0
+        
         try:
-            # First find the peptide by name
-            peptide = self.get_by_name(name)
-            if not peptide:
-                logger.warning(f"Peptide '{name}' not found for deletion")
-                return False
+            # Get name-to-ID mapping by scrolling through all points
+            name_to_ids = self.get_peptide_name_to_ids()
             
-            # Delete by ID
-            return self.delete(peptide["id"])
+            # Collect all point IDs to delete
+            ids_to_delete = []
+            names_found = set()
+            
+            for name in names:
+                name_str = str(name).strip()
+                if name_str in name_to_ids:
+                    ids_to_delete.extend(name_to_ids[name_str])
+                    names_found.add(name_str)
+                else:
+                    logger.debug(f"Peptide '{name_str}' not found in Qdrant for deletion")
+            
+            if not ids_to_delete:
+                logger.warning(f"⚠️ No peptides found to delete from {len(names)} requested names")
+                return 0
+            
+            # Delete all points by their IDs
+            logger.info(f"🗑️ Deleting {len(ids_to_delete)} point(s) for {len(names_found)} peptide name(s)...")
+            
+            deleted_count = 0
+            failed_count = 0
+            
+            # Delete in batches to avoid overwhelming Qdrant
+            batch_size = 50
+            for i in range(0, len(ids_to_delete), batch_size):
+                batch_ids = ids_to_delete[i:i + batch_size]
+                try:
+                    with ExternalApiTimer("qdrant", operation="delete") as t:
+                        self.client.delete(
+                            collection_name=self.collection_name,
+                            points_selector=batch_ids
+                        )
+                        t.set_status(status_code=200, success=True)
+                    deleted_count += len(batch_ids)
+                    logger.debug(f"✅ Deleted batch of {len(batch_ids)} points")
+                except Exception as e:
+                    logger.error(f"Error deleting batch of points: {str(e)}")
+                    failed_count += len(batch_ids)
+            
+            if deleted_count > 0:
+                logger.info(f"✅ Deleted {deleted_count} point(s) for {len(names_found)} peptide name(s) from Qdrant")
+            if failed_count > 0:
+                logger.warning(f"⚠️ Failed to delete {failed_count} points")
+            
+            return deleted_count
             
         except Exception as e:
-            logger.error(f"Error deleting peptide by name: {str(e)}")
-            return False
+            logger.error(f"Error deleting peptides by names: {str(e)}")
+            return 0
     
     def list_all(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """List all peptides with pagination."""
@@ -325,6 +372,89 @@ class VectorStoreRepository(BaseRepository[Dict[str, Any]]):
             }
         except Exception as e:
             logger.error(f"Error getting collection stats: {str(e)}")
+            return {}
+    
+    def get_all_peptide_names(self) -> set:
+        """Get all peptide names from Qdrant by scrolling through all points"""
+        try:
+            peptide_names = set()
+            offset = None
+            batch_size = 100  # Scroll in batches
+            
+            logger.info(f"📥 Fetching all peptide names from Qdrant collection '{self.collection_name}'...")
+            
+            while True:
+                with ExternalApiTimer("qdrant", operation="scroll", metadata={"limit": batch_size}) as t:
+                    points, next_offset = self.client.scroll(
+                        collection_name=self.collection_name,
+                        limit=batch_size,
+                        offset=offset,
+                        with_payload=["name"],  # Only fetch name field to save bandwidth
+                        with_vectors=False  # Don't need vectors
+                    )
+                    t.set_status(status_code=200, success=True)
+                
+                # Extract names from points
+                for point in points:
+                    name = point.payload.get("name")
+                    if name:
+                        peptide_names.add(str(name).strip())
+                
+                logger.debug(f"📊 Scrolled batch: found {len(points)} points, total unique names: {len(peptide_names)}")
+                
+                # Check if there are more points
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            logger.info(f"✅ Retrieved {len(peptide_names)} unique peptide names from Qdrant")
+            return peptide_names
+            
+        except Exception as e:
+            logger.error(f"Error getting all peptide names from Qdrant: {str(e)}")
+            return set()
+    
+    def get_peptide_name_to_ids(self) -> Dict[str, List]:
+        """Get mapping of peptide names to their point IDs (handles duplicates)"""
+        try:
+            name_to_ids = {}
+            offset = None
+            batch_size = 100  # Scroll in batches
+            
+            logger.info(f"📥 Fetching peptide name-to-ID mapping from Qdrant collection '{self.collection_name}'...")
+            
+            while True:
+                with ExternalApiTimer("qdrant", operation="scroll", metadata={"limit": batch_size}) as t:
+                    points, next_offset = self.client.scroll(
+                        collection_name=self.collection_name,
+                        limit=batch_size,
+                        offset=offset,
+                        with_payload=["name"],  # Only fetch name field
+                        with_vectors=False  # Don't need vectors
+                    )
+                    t.set_status(status_code=200, success=True)
+                
+                # Map names to IDs
+                for point in points:
+                    name = point.payload.get("name")
+                    if name:
+                        name_str = str(name).strip()
+                        if name_str not in name_to_ids:
+                            name_to_ids[name_str] = []
+                        name_to_ids[name_str].append(point.id)
+                
+                logger.debug(f"📊 Scrolled batch: found {len(points)} points, total unique names: {len(name_to_ids)}")
+                
+                # Check if there are more points
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            logger.info(f"✅ Retrieved name-to-ID mapping for {len(name_to_ids)} unique peptide names from Qdrant")
+            return name_to_ids
+            
+        except Exception as e:
+            logger.error(f"Error getting peptide name-to-ID mapping from Qdrant: {str(e)}")
             return {}
     
     def health_check(self) -> bool:

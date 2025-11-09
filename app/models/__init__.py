@@ -1,6 +1,7 @@
 # Pydantic models and schemas
 from .allowed_url import AllowedUrl, AllowedUrlCreate, AllowedUrlSchema, AllowedUrlResponse, AllowedUrlListResponse
 from .chat_restriction import ChatRestriction, ChatRestrictionCreate, ChatRestrictionSchema, ChatRestrictionResponse, ChatRestrictionListResponse
+from .tavily_toggle import TavilyToggle, TavilyToggleUpdate, TavilyToggleSchema, TavilyToggleResponse
 from .peptide import PeptideCreate, PeptidePayload, PeptideResponse, PeptideChemicalInfo, PeptideChemicalResponse
 from .search import SearchRequest, SearchResult, ContentChunk, SourceSite, SearchResponse, SearchAPIResponse
 from .analytics import EndpointUsage, EndpointUsageCreate, EndpointUsageResponse, ExternalApiUsage, ExternalApiUsageCreate, ExternalApiUsageSummary
@@ -38,5 +39,9 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "PeptideInfoSession",
-    "PeptideInfoMessage"
+    "PeptideInfoMessage",
+    "TavilyToggle",
+    "TavilyToggleUpdate",
+    "TavilyToggleSchema",
+    "TavilyToggleResponse"
 ]

@@ -434,17 +434,31 @@ Provide a concise answer based on the context above."""
                         "source": "qdrant+judge"
                     }
                 else:
-                    logger.info(f"Judge said NO; falling back to Tavily search for '{peptide_name}'")
-                    tavily_content, tavily_score = self._tavily_fetch_content(query)
-                    logger.info(f"Tavily search returned {len(tavily_content)} content chunks with score: {tavily_score}")
-                    answer = self._generate_final_answer_from_content(query, tavily_content, peptide_name_hint=peptide_name)
-                    return {
-                        "llm_response": answer,
-                        "peptide_name": peptide_name,
-                        "similarity_score": tavily_score,
-                        "peptide_context": "\n\n".join(tavily_content) if tavily_content else None,
-                        "source": "tavily"
-                    }
+                    # Check if Tavily search is enabled
+                    tavily_enabled = self._is_tavily_enabled()
+                    
+                    if tavily_enabled:
+                        logger.info(f"Judge said NO; falling back to Tavily search for '{peptide_name}'")
+                        tavily_content, tavily_score = self._tavily_fetch_content(query)
+                        logger.info(f"Tavily search returned {len(tavily_content)} content chunks with score: {tavily_score}")
+                        answer = self._generate_final_answer_from_content(query, tavily_content, peptide_name_hint=peptide_name)
+                        return {
+                            "llm_response": answer,
+                            "peptide_name": peptide_name,
+                            "similarity_score": tavily_score,
+                            "peptide_context": "\n\n".join(tavily_content) if tavily_content else None,
+                            "source": "tavily"
+                        }
+                    else:
+                        logger.info(f"Judge said NO; Tavily search is disabled, returning limited response")
+                        # Return a response indicating no additional information found
+                        return {
+                            "llm_response": f"I couldn't find sufficient information about {peptide_name} in the knowledge base to answer your query. Please try rephrasing your question or ask about a different aspect of this peptide.",
+                            "peptide_name": peptide_name,
+                            "similarity_score": round(similarity_score, 6) if similarity_score is not None else None,
+                            "peptide_context": peptide_context,
+                            "source": "qdrant+judge"
+                        }
 
             # Above threshold: use Qdrant context directly
             logger.info(f"Similarity {similarity_score} >= threshold {threshold}; using Qdrant context directly from {context_source}")
@@ -462,6 +476,22 @@ Provide a concise answer based on the context above."""
             logger.error(f"Error searching and answering for query '{query}': {str(e)}", exc_info=True)
             raise
 
+    def _is_tavily_enabled(self) -> bool:
+        """Check if Tavily search is enabled"""
+        try:
+            from app.core.database import SessionLocal
+            from app.services.tavily_toggle_service import TavilyToggleService
+            
+            db = SessionLocal()
+            try:
+                toggle_service = TavilyToggleService(db)
+                return toggle_service.is_tavily_enabled()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Error checking Tavily toggle, defaulting to enabled: {str(e)}")
+            return True  # Default to enabled if check fails
+    
     def _get_chat_restrictions(self) -> str:
         """Get all chat restrictions and format them for LLM prompts"""
         try:

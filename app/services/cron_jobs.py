@@ -167,8 +167,8 @@ async def cleanup_old_analytics():
 async def sync_peptides_from_supabase():
     """
     Sync peptides from Supabase to Qdrant vector database
-    Fetches data, compares with previous CSV, and adds only new peptides
-    Runs every 2 minutes (for testing)
+    Fetches data, compares with Qdrant names, and syncs missing/extra peptides
+    Runs every 1 minute
     """
     try:
         logger.info("🔄 Starting Supabase peptide sync job...")
@@ -182,5 +182,48 @@ async def sync_peptides_from_supabase():
         logger.info("✅ Supabase peptide sync job completed")
     except Exception as e:
         logger.error(f"❌ Supabase peptide sync job failed: {e}")
+        # Don't raise - allow job to continue on next run
+
+
+async def startup_sync_peptides():
+    """
+    Startup sync: Verify counts between CSV and Qdrant, perform full sync if mismatch
+    This runs once at startup to ensure data consistency
+    """
+    try:
+        logger.info("🚀 Starting startup peptide sync verification...")
+        import asyncio
+        from app.services.supabase_sync_service import SupabaseSyncService
+        from app.repositories.repository_manager import repository_manager
+        
+        sync_service = SupabaseSyncService()
+        
+        # Run in thread since it uses synchronous libraries
+        await asyncio.to_thread(sync_service.startup_sync_verify)
+        
+        logger.info("✅ Startup peptide sync verification completed")
+    except Exception as e:
+        logger.error(f"❌ Startup peptide sync verification failed: {e}")
+        # Don't raise - allow application to continue
+
+
+async def sync_peptides_from_supabase_6h():
+    """
+    Sync peptides from Supabase to Qdrant vector database (6-hour interval)
+    Fetches data, compares with Qdrant names, and syncs missing/extra peptides
+    Runs every 6 hours as a backup/comprehensive sync
+    """
+    try:
+        logger.info("🔄 Starting 6-hour Supabase peptide sync job...")
+        import asyncio
+        from app.services.supabase_sync_service import SupabaseSyncService
+        
+        sync_service = SupabaseSyncService()
+        # Run sync in thread since it uses synchronous libraries (pandas, supabase)
+        await asyncio.to_thread(sync_service.sync_peptides)
+        
+        logger.info("✅ 6-hour Supabase peptide sync job completed")
+    except Exception as e:
+        logger.error(f"❌ 6-hour Supabase peptide sync job failed: {e}")
         # Don't raise - allow job to continue on next run
 

@@ -70,7 +70,7 @@ def _fallback_table_creation():
         else:
             # Check if our specific tables exist
             required_tables = [
-                'allowed_urls', 'chat_restrictions', 'endpoint_usage', 'external_api_usage', 
+                'allowed_urls', 'chat_restrictions', 'tavily_toggle', 'endpoint_usage', 'external_api_usage', 
                 'chat_sessions', 'chat_messages', 'peptide_info_sessions', 'peptide_info_messages'
             ]
             missing_tables = [table for table in required_tables if table not in existing_tables]
@@ -107,6 +107,13 @@ def update_existing_schemas(inspector):
                 from app.models.chat_restriction import ChatRestriction
                 ChatRestriction.__table__.create(bind=engine)
                 print("chat_restrictions table schema updated successfully")
+        
+        # Check if tavily_toggle table exists, create if missing
+        if 'tavily_toggle' not in inspector.get_table_names():
+            print("Creating tavily_toggle table...")
+            from app.models.tavily_toggle import TavilyToggle
+            TavilyToggle.__table__.create(bind=engine)
+            print("tavily_toggle table created successfully")
                 
     except Exception as e:
         print(f"Warning: Could not update existing schemas: {e}")

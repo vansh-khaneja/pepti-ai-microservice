@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.models import (
     ChatSession, ChatMessage,
     PeptideInfoSession, PeptideInfoMessage,
-    AllowedUrl, ChatRestriction, EndpointUsage, ExternalApiUsage
+    AllowedUrl, ChatRestriction, EndpointUsage, ExternalApiUsage, TavilyToggle
 )
 
 # this is the Alembic Config object, which provides
