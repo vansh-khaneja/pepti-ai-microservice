@@ -90,7 +90,7 @@ async def aggregate_daily_analytics():
 async def health_check_job():
     """
     Periodic health check job
-    Runs every 2 minutes
+    Runs every 2 hours
     """
     try:
         logger.info("🏥 Running health check...")
@@ -168,7 +168,7 @@ async def sync_peptides_from_supabase():
     """
     Sync peptides from Supabase to Qdrant vector database
     Fetches data, compares with previous CSV, and adds only new peptides
-    Runs every 6 hours
+    Runs every 2 minutes (for testing)
     """
     try:
         logger.info("🔄 Starting Supabase peptide sync job...")

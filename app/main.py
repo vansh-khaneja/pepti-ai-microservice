@@ -108,17 +108,17 @@ async def startup_event():
                 job_id="cleanup_redis_cache"
             )
             
-            # Health check every 2 minutes
+            # Health check every 2 hours
             scheduler_service.add_interval_job(
                 cron_jobs.health_check_job,
-                minutes=2,
+                hours=2,
                 job_id="health_check_job"
             )
             
-            # Supabase peptide sync every 6 hours
+            # Supabase peptide sync every 2 minutes (for testing)
             scheduler_service.add_interval_job(
                 cron_jobs.sync_peptides_from_supabase,
-                hours=6,
+                minutes=2,
                 job_id="sync_peptides_from_supabase"
             )
             
