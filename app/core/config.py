@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     TAVILY_API_KEY: str = ""
     
+    # Authentication
+    API_TOKEN: str = ""  # Bearer token for API authentication
+    
     # Supabase settings
     SUPABASE_URL: str = ""
     SUPABASE_KEY: str = ""
