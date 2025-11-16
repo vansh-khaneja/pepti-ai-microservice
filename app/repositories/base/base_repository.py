@@ -32,3 +32,4 @@ class BaseRepository(ABC, Generic[T]):
     def list_all(self, limit: int = 100, offset: int = 0) -> List[T]:
         """List all entities with pagination."""
         pass
+

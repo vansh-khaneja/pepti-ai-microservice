@@ -1,9 +1,9 @@
 """Repository manager for managing core data repositories globally."""
 
 from typing import Optional
-from app.repositories.vector_store.qdrant_repository import VectorStoreRepository
-from app.repositories.relational.postgresql_repository import RelationalRepository
-from app.repositories.cache.redis_repository import CacheRepository
+from app.repositories.dbs.qdrant.repository import VectorStoreRepository
+from app.repositories.dbs.postgresql.repository import RelationalRepository
+from app.repositories.dbs.redis.repository import CacheRepository
 from app.utils.helpers import logger
 
 

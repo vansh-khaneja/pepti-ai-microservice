@@ -1,16 +1,12 @@
 # Repositories module for data access layer
 
-from .base_repository import BaseRepository
+from .base.base_repository import BaseRepository
 from .repository_manager import repository_manager
 
-# Vector Store Repositories
-from .vector_store.qdrant_repository import VectorStoreRepository
-
-# Relational Repositories
-from .relational.postgresql_repository import RelationalRepository
-
-# Cache Repositories
-from .cache.redis_repository import CacheRepository
+# Database Repositories
+from .dbs.qdrant.repository import VectorStoreRepository
+from .dbs.postgresql.repository import RelationalRepository
+from .dbs.redis.repository import CacheRepository
 
 __all__ = [
     # Base
