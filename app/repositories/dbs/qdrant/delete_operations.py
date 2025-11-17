@@ -1,7 +1,7 @@
 """Delete operations for Qdrant repository."""
 
 from typing import Dict, List
-from app.utils.helpers import logger, ExternalApiTimer
+from app.utils.helpers import logger
 
 class QdrantDeleteOperations:
     """Handles delete operations for Qdrant."""
@@ -15,12 +15,10 @@ class QdrantDeleteOperations:
     def delete(self, entity_id: str) -> bool:
         """Delete a peptide by point ID."""
         try:
-            with ExternalApiTimer("qdrant", operation="delete") as t:
-                self.client.delete(
-                    collection_name=self.collection_name,
-                    points_selector=[entity_id]
-                )
-                t.set_status(status_code=200, success=True)
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=[entity_id]
+            )
             
             logger.info(f"Peptide with ID '{entity_id}' deleted successfully")
             return True
@@ -69,12 +67,10 @@ class QdrantDeleteOperations:
             for i in range(0, len(ids_to_delete), batch_size):
                 batch_ids = ids_to_delete[i:i + batch_size]
                 try:
-                    with ExternalApiTimer("qdrant", operation="delete") as t:
-                        self.client.delete(
-                            collection_name=self.collection_name,
-                            points_selector=batch_ids
-                        )
-                        t.set_status(status_code=200, success=True)
+                    self.client.delete(
+                        collection_name=self.collection_name,
+                        points_selector=batch_ids
+                    )
                     deleted_count += len(batch_ids)
                     logger.debug(f"✅ Deleted batch of {len(batch_ids)} points")
                 except Exception as e:

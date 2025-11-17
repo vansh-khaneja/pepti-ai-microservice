@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from app.core.config import settings
 from app.models.peptide import PeptidePayload
-from app.utils.helpers import logger, ExternalApiTimer
+from app.utils.helpers import logger
 
 class QdrantService:
     # Class-level flag to ensure heavy collection/index checks happen only once per process
@@ -41,31 +41,25 @@ class QdrantService:
     def _ensure_collection_exists(self):
         """Ensure the peptides collection exists, create if it doesn't"""
         try:
-            with ExternalApiTimer("qdrant", operation="get_collections") as t:
-                collections = self.client.get_collections()
-                t.set_status(status_code=200, success=True)
+            collections = self.client.get_collections()
             collection_names = [col.name for col in collections.collections]
             
             if self.collection_name not in collection_names:
                 logger.info(f"Creating collection: {self.collection_name}")
-                with ExternalApiTimer("qdrant", operation="create_collection", metadata={"collection": self.collection_name}) as t:
-                    self.client.create_collection(
+                self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
                         size=self.vector_size,
                         distance=Distance.COSINE
                     )
-                    )
-                    t.set_status(status_code=200, success=True)
+                )
                 
                 # Create index on the name field for efficient searching
-                with ExternalApiTimer("qdrant", operation="create_payload_index", metadata={"field": "name"}) as t:
-                    self.client.create_payload_index(
+                self.client.create_payload_index(
                     collection_name=self.collection_name,
                     field_name="name",
                     field_schema="keyword"
-                    )
-                    t.set_status(status_code=200, success=True)
+                )
                 
                 logger.info(f"Collection {self.collection_name} created successfully with name index")
             else:
@@ -95,13 +89,11 @@ class QdrantService:
                 # This handles cases where the collection exists but index is missing
                 try:
                     logger.info("Ensuring name index exists on existing collection")
-                    with ExternalApiTimer("qdrant", operation="create_payload_index", metadata={"field": "name"}) as t:
-                        self.client.create_payload_index(
+                    self.client.create_payload_index(
                         collection_name=self.collection_name,
                         field_name="name",
                         field_schema="keyword"
-                        )
-                        t.set_status(status_code=200, success=True)
+                    )
                     logger.info("Name index created/verified successfully")
                 except Exception as index_error:
                     # If index already exists, this is fine
@@ -118,13 +110,11 @@ class QdrantService:
         """Ensure the name index exists, create if it doesn't"""
         try:
             logger.info("Ensuring name index exists")
-            with ExternalApiTimer("qdrant", operation="create_payload_index", metadata={"field": "name"}) as t:
-                self.client.create_payload_index(
+            self.client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name="name",
                 field_schema="keyword"
-                )
-                t.set_status(status_code=200, success=True)
+            )
             logger.info("Name index created/verified successfully")
         except Exception as e:
             # If index already exists, this is fine
@@ -160,12 +150,10 @@ class QdrantService:
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 try:
-                    with ExternalApiTimer("qdrant", operation="upsert", metadata={"collection": self.collection_name}) as t:
-                        self.client.upsert(
+                    self.client.upsert(
                         collection_name=self.collection_name,
                         points=[point]
-                        )
-                        t.set_status(status_code=200, success=True)
+                    )
                     break
                 except Exception as upsert_error:
                     message = str(upsert_error)
@@ -188,8 +176,7 @@ class QdrantService:
         """Delete a peptide by name"""
         try:
             # Search for the peptide by name in payload
-            with ExternalApiTimer("qdrant", operation="scroll", metadata={"collection": self.collection_name}) as t:
-                search_results = self.client.scroll(
+            search_results = self.client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter={
                     "must": [
@@ -200,8 +187,7 @@ class QdrantService:
                     ]
                 },
                 limit=1
-                )
-                t.set_status(status_code=200, success=True)
+            )
             
             if not search_results[0]:
                 logger.warning(f"Peptide '{peptide_name}' not found")
@@ -211,12 +197,10 @@ class QdrantService:
             point_id = search_results[0][0].id
             
             # Delete the point using its ID
-            with ExternalApiTimer("qdrant", operation="delete", metadata={"collection": self.collection_name}) as t:
-                self.client.delete(
+            self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=[point_id]
-                )
-                t.set_status(status_code=200, success=True)
+            )
             
             logger.info(f"Peptide '{peptide_name}' deleted successfully")
             return True
@@ -229,8 +213,7 @@ class QdrantService:
         """Get peptide data by name from payload"""
         try:
             # Search for the peptide by name in payload
-            with ExternalApiTimer("qdrant", operation="scroll", metadata={"collection": self.collection_name}) as t:
-                search_results = self.client.scroll(
+            search_results = self.client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter={
                     "must": [
@@ -242,8 +225,7 @@ class QdrantService:
                 },
                 limit=1,
                 with_vectors=True  # Explicitly request vectors
-                )
-                t.set_status(status_code=200, success=True)
+            )
             
             if not search_results[0]:
                 logger.warning(f"Peptide '{peptide_name}' not found")
@@ -265,13 +247,11 @@ class QdrantService:
     def search_peptides(self, query_embedding: List[float], limit: int = 10) -> List[Dict[str, Any]]:
         """Search for peptides using vector similarity"""
         try:
-            with ExternalApiTimer("qdrant", operation="search", metadata={"collection": self.collection_name}) as t:
-                search_results = self.client.search(
+            search_results = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_embedding,
                 limit=limit
-                )
-                t.set_status(status_code=200, success=True)
+            )
             
             peptides = []
             for result in search_results:

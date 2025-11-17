@@ -1,7 +1,7 @@
 """Utility operations for Qdrant repository."""
 
 from typing import Dict, Any, List
-from app.utils.helpers import logger, ExternalApiTimer
+from app.utils.helpers import logger
 
 class QdrantUtilsOperations:
     """Handles utility operations for Qdrant."""
@@ -59,15 +59,13 @@ class QdrantUtilsOperations:
             logger.info(f"📥 Fetching all peptide names from Qdrant collection '{self.collection_name}'...")
             
             while True:
-                with ExternalApiTimer("qdrant", operation="scroll", metadata={"limit": batch_size}) as t:
-                    points, next_offset = self.client.scroll(
-                        collection_name=self.collection_name,
-                        limit=batch_size,
-                        offset=offset,
-                        with_payload=["name"],  # Only fetch name field to save bandwidth
-                        with_vectors=False  # Don't need vectors
-                    )
-                    t.set_status(status_code=200, success=True)
+                points, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=["name"],  # Only fetch name field to save bandwidth
+                    with_vectors=False  # Don't need vectors
+                )
                 
                 # Extract names from points
                 for point in points:
@@ -99,15 +97,13 @@ class QdrantUtilsOperations:
             logger.info(f"📥 Fetching peptide name-to-ID mapping from Qdrant collection '{self.collection_name}'...")
             
             while True:
-                with ExternalApiTimer("qdrant", operation="scroll", metadata={"limit": batch_size}) as t:
-                    points, next_offset = self.client.scroll(
-                        collection_name=self.collection_name,
-                        limit=batch_size,
-                        offset=offset,
-                        with_payload=["name"],  # Only fetch name field
-                        with_vectors=False  # Don't need vectors
-                    )
-                    t.set_status(status_code=200, success=True)
+                points, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=["name"],  # Only fetch name field
+                    with_vectors=False  # Don't need vectors
+                )
                 
                 # Map names to IDs
                 for point in points:

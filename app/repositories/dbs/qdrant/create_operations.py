@@ -2,7 +2,7 @@
 
 from typing import Dict, Any
 from qdrant_client.models import PointStruct
-from app.utils.helpers import logger, ExternalApiTimer
+from app.utils.helpers import logger
 import uuid
 import time
 
@@ -38,12 +38,10 @@ class QdrantCreateOperations:
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 try:
-                    with ExternalApiTimer("qdrant", operation="upsert") as t:
-                        self.client.upsert(
-                            collection_name=self.collection_name,
-                            points=[point]
-                        )
-                        t.set_status(status_code=200, success=True)
+                    self.client.upsert(
+                        collection_name=self.collection_name,
+                        points=[point]
+                    )
                     
                     logger.info(f"Peptide '{entity['name']}' stored successfully with ID: {point_id}")
                     return {"id": point_id, **entity}

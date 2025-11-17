@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, Optional, List
 from qdrant_client.models import Filter, FieldCondition, MatchValue
-from app.utils.helpers import logger, ExternalApiTimer
+from app.utils.helpers import logger
 
 class QdrantReadOperations:
     """Handles read operations for Qdrant."""
@@ -16,12 +16,10 @@ class QdrantReadOperations:
     def get_by_id(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """Get peptide by point ID."""
         try:
-            with ExternalApiTimer("qdrant", operation="retrieve") as t:
-                points = self.client.retrieve(
-                    collection_name=self.collection_name,
-                    ids=[entity_id]
-                )
-                t.set_status(status_code=200, success=(len(points) > 0))
+            points = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[entity_id]
+            )
             
             if points:
                 point = points[0]
@@ -41,20 +39,18 @@ class QdrantReadOperations:
         try:
             self.index_manager.ensure_name_index()
             
-            with ExternalApiTimer("qdrant", operation="scroll") as t:
-                points, _ = self.client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=Filter(
-                        must=[
-                            FieldCondition(
-                                key="name",
-                                match=MatchValue(value=name)
-                            )
-                        ]
-                    ),
-                    limit=1
-                )
-                t.set_status(status_code=200, success=(len(points) > 0))
+            points, _ = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="name",
+                            match=MatchValue(value=name)
+                        )
+                    ]
+                ),
+                limit=1
+            )
             
             if points:
                 point = points[0]
@@ -72,15 +68,13 @@ class QdrantReadOperations:
     def list_all(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """List all peptides with pagination."""
         try:
-            with ExternalApiTimer("qdrant", operation="scroll") as t:
-                points, _ = self.client.scroll(
-                    collection_name=self.collection_name,
-                    limit=limit,
-                    offset=offset,
-                    with_payload=True,
-                    with_vectors=True
-                )
-                t.set_status(status_code=200, success=True)
+            points, _ = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True
+            )
             
             formatted_results = []
             for point in points:
